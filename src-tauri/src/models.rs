@@ -135,6 +135,7 @@ pub struct SearchItem {
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     pub theme: String,
+    pub ui_scale: f64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -162,24 +163,46 @@ pub struct WatchAddResult {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
+pub struct IndicatorLine {
+    pub period: i64,
+    pub color: String,
+    pub width: f64,
+    pub dashed: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct ChartPrefs {
     pub ma_enabled: bool,
-    pub ma_periods: Vec<i64>,
+    pub ma_lines: Vec<IndicatorLine>,
     pub ema_enabled: bool,
-    pub ema_periods: Vec<i64>,
+    pub ema_lines: Vec<IndicatorLine>,
     pub kdj_enabled: bool,
     pub kdj_n: i64,
     pub kdj_k: i64,
     pub kdj_d: i64,
 }
 
+fn default_lines(periods: [i64; 4], colors: [&str; 4], width: f64, dashed: bool) -> Vec<IndicatorLine> {
+    periods
+        .into_iter()
+        .zip(colors)
+        .map(|(period, color)| IndicatorLine {
+            period,
+            color: color.into(),
+            width,
+            dashed,
+        })
+        .collect()
+}
+
 impl Default for ChartPrefs {
     fn default() -> Self {
         Self {
             ma_enabled: false,
-            ma_periods: vec![5, 10, 20, 60],
+            ma_lines: default_lines([5, 10, 20, 60], ["sky", "amber", "violet", "brass"], 1.0, true),
             ema_enabled: true,
-            ema_periods: vec![5, 10, 20, 60],
+            ema_lines: default_lines([5, 10, 20, 60], ["brass", "up", "down", "violet"], 1.2, false),
             kdj_enabled: true,
             kdj_n: 9,
             kdj_k: 3,

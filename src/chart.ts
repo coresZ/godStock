@@ -1,11 +1,11 @@
-import type { KlineCandle, Period } from "./lib/types";
+import type { IndicatorLine, KlineCandle, Period } from "./lib/types";
 import { fmtAmount, fmtPct, fmtPrice, fmtVolume } from "./lib/ui";
 
 export interface KLineIndicatorConfig {
   maEnabled: boolean;
-  maPeriods: number[];
+  maLines: IndicatorLine[];
   emaEnabled: boolean;
-  emaPeriods: number[];
+  emaLines: IndicatorLine[];
   kdjEnabled: boolean;
   kdjN: number;
   kdjK: number;
@@ -21,6 +21,7 @@ interface LineSeries {
   period: number;
   values: number[];
   color: string;
+  width: number;
   dashed: boolean;
 }
 
@@ -36,6 +37,8 @@ interface Colors {
   flat: string;
   brass: string;
   violet: string;
+  sky: string;
+  amber: string;
   tooltip: string;
   surface: string;
 }
@@ -99,9 +102,9 @@ export class KLineChart {
     this.range = opts.range;
     this.config = {
       maEnabled: opts.maEnabled,
-      maPeriods: opts.maPeriods.slice(),
+      maLines: opts.maLines.map((line) => ({ ...line })),
       emaEnabled: opts.emaEnabled,
-      emaPeriods: opts.emaPeriods.slice(),
+      emaLines: opts.emaLines.map((line) => ({ ...line })),
       kdjEnabled: opts.kdjEnabled,
       kdjN: opts.kdjN,
       kdjK: opts.kdjK,
@@ -146,9 +149,28 @@ export class KLineChart {
       flat: v("--muted"),
       brass: v("--brass"),
       violet: v("--violet"),
+      sky: v("--sky"),
+      amber: v("--amber"),
       tooltip: v("--surface-2"),
       surface: v("--surface-3"),
     };
+  }
+
+  private lineColor(token: string): string {
+    switch (token) {
+      case "up":
+        return this.colors.up;
+      case "down":
+        return this.colors.down;
+      case "violet":
+        return this.colors.violet;
+      case "sky":
+        return this.colors.sky;
+      case "amber":
+        return this.colors.amber;
+      default:
+        return this.colors.brass;
+    }
   }
 
   setData(candles: KlineCandle[]): void {
@@ -169,11 +191,11 @@ export class KLineChart {
   setConfig(config: KLineIndicatorConfig): void {
     this.config = {
       ...config,
-      maPeriods: config.maPeriods.slice(),
-      emaPeriods: config.emaPeriods.slice(),
+      maLines: config.maLines.map((line) => ({ ...line })),
+      emaLines: config.emaLines.map((line) => ({ ...line })),
     };
-    this.computeIndicators();
     this.colors = this.readColors();
+    this.computeIndicators();
     this.lastLegendIndex = -2;
     this.renderLegend();
     this.draw();
@@ -209,23 +231,24 @@ export class KLineChart {
 
   private computeIndicators(): void {
     const closes = this.candles.map((c) => c.close);
-    const palette = [this.colors.brass, this.colors.up, this.colors.down, this.colors.violet];
     if (this.config.maEnabled) {
-      this.maSeries = this.config.maPeriods.slice(0, 4).map((period, i) => ({
-        period,
-        values: ma(closes, period),
-        color: palette[i % palette.length],
-        dashed: true,
+      this.maSeries = this.config.maLines.slice(0, 4).map((line) => ({
+        period: line.period,
+        values: ma(closes, line.period),
+        color: this.lineColor(line.color),
+        width: line.width,
+        dashed: line.dashed,
       }));
     } else {
       this.maSeries = [];
     }
     if (this.config.emaEnabled) {
-      this.emaSeries = this.config.emaPeriods.slice(0, 4).map((period, i) => ({
-        period,
-        values: ema(closes, period),
-        color: palette[i % palette.length],
-        dashed: false,
+      this.emaSeries = this.config.emaLines.slice(0, 4).map((line) => ({
+        period: line.period,
+        values: ema(closes, line.period),
+        color: this.lineColor(line.color),
+        width: line.width,
+        dashed: line.dashed,
       }));
     } else {
       this.emaSeries = [];
@@ -690,9 +713,9 @@ export class KLineChart {
     for (const series of [...this.maSeries, ...this.emaSeries]) {
       c.beginPath();
       c.strokeStyle = series.color;
-      c.lineWidth = series.dashed ? 1 : 1.15;
-      c.globalAlpha = series.dashed ? 0.44 : 0.8;
-      c.setLineDash(series.dashed ? [3, 3] : []);
+      c.lineWidth = Math.max(0.8, Math.min(2.4, series.width));
+      c.globalAlpha = series.dashed ? 0.72 : 0.9;
+      c.setLineDash(series.dashed ? [4, 4] : []);
       let started = false;
       for (let i = start; i < start + count; i++) {
         const v = series.values[i];
@@ -980,19 +1003,15 @@ export class KLineChart {
     const parts: string[] = [];
     for (const series of this.maSeries) {
       parts.push(
-        `<span class="legend-item" style="color:${series.color};opacity:.72"><i class="legend-swatch"></i>MA${series.period} ${fmt(series.values[index])}</span>`,
+        `<span class="legend-item" style="color:${series.color}"><i class="legend-swatch ${series.dashed ? "is-dashed" : ""}" style="${series.dashed ? "border-top-width:2px" : `height:${Math.max(1.5, Math.min(3, series.width))}px`}"></i>MA${series.period} ${fmt(series.values[index])}</span>`,
       );
     }
     for (const series of this.emaSeries) {
       parts.push(
-        `<span class="legend-item" style="color:${series.color}"><i class="legend-swatch"></i>EMA${series.period} ${fmt(series.values[index])}</span>`,
+        `<span class="legend-item" style="color:${series.color}"><i class="legend-swatch ${series.dashed ? "is-dashed" : ""}" style="${series.dashed ? "border-top-width:2px" : `height:${Math.max(1.5, Math.min(3, series.width))}px`}"></i>EMA${series.period} ${fmt(series.values[index])}</span>`,
       );
     }
-    if (this.config.kdjEnabled) {
-      parts.push(`<span class="legend-item" style="color:${this.colors.brass}">K ${fmt(this.kdjK[index])}</span>`);
-      parts.push(`<span class="legend-item" style="color:${this.colors.down}">D ${fmt(this.kdjD[index])}</span>`);
-      parts.push(`<span class="legend-item" style="color:${this.colors.violet}">J ${fmt(this.kdjJ[index])}</span>`);
-    }
+    // KDJ 的三条读数放在悬浮提示与 KDJ 面板内，主图例只保留均线，避免第二行孤字。
     this.legend.innerHTML = parts.join("");
   }
 }

@@ -140,6 +140,7 @@ pub async fn get_kline(
         return Err("股票代码应为 6 位数字".into());
     }
     let period = match period.as_str() {
+        "1m" => "1m",
         "15m" => "15m",
         "30m" => "30m",
         "60m" => "60m",
@@ -216,7 +217,11 @@ fn read_indices(state: &AppState) -> Result<Vec<IndexQuote>, String> {
             continue;
         }
         let last = rows.last().unwrap();
-        let prev_close = if rows.len() > 1 { rows[rows.len() - 2].1 } else { last.1 };
+        let prev_close = if last.2 > -99.0 {
+            last.1 / (1.0 + last.2 / 100.0)
+        } else {
+            last.1
+        };
         out.push(IndexQuote {
             code: code.to_string(),
             name: index_name(code).to_string(),
@@ -242,6 +247,7 @@ pub async fn get_index_kline(
         return Err("不支持的指数".into());
     }
     let period = match period.as_str() {
+        "1m" => "1m",
         "15m" => "15m",
         "30m" => "30m",
         "60m" => "60m",
@@ -377,8 +383,15 @@ pub async fn get_settings(state: State<'_, AppState>) -> Result<Settings, String
     let theme = db::get_setting(&conn, "theme")
         .map_err(|e| err(e))?
         .unwrap_or_else(|| "dark".into());
+    let ui_scale = db::get_setting(&conn, "ui_scale")
+        .ok()
+        .flatten()
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(1.10)
+        .clamp(0.9, 1.25);
     Ok(Settings {
         theme: if theme == "light" { "light".into() } else { "dark".into() },
+        ui_scale,
     })
 }
 
@@ -388,6 +401,19 @@ pub async fn set_theme(state: State<'_, AppState>, theme: String) -> Result<(), 
     let conn = state_conn(&state)?;
     db::set_setting(&conn, "theme", theme).map_err(|e| err(e))?;
     Ok(())
+}
+
+#[tauri::command]
+pub async fn set_ui_scale(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+    scale: f64,
+) -> Result<f64, String> {
+    let scale = scale.clamp(0.9, 1.25);
+    window.set_zoom(scale).map_err(|e| e.to_string())?;
+    let conn = state_conn(&state)?;
+    db::set_setting(&conn, "ui_scale", &format!("{scale:.3}")).map_err(|e| err(e))?;
+    Ok(scale)
 }
 
 #[tauri::command]
@@ -477,23 +503,84 @@ fn setting_i64(conn: &rusqlite::Connection, key: &str, default: i64) -> i64 {
         .unwrap_or(default)
 }
 
+fn legacy_lines(periods: &[i64], width: f64, dashed: bool) -> Vec<IndicatorLine> {
+    let colors = ["brass", "up", "down", "violet"];
+    periods
+        .iter()
+        .take(4)
+        .enumerate()
+        .map(|(i, period)| IndicatorLine {
+            period: *period,
+            color: colors[i % colors.len()].into(),
+            width,
+            dashed,
+        })
+        .collect()
+}
+
+fn clean_lines(lines: Vec<IndicatorLine>, defaults: &[IndicatorLine]) -> Vec<IndicatorLine> {
+    let mut out = Vec::new();
+    for line in lines {
+        if line.period < 2 || line.period > 250 {
+            continue;
+        }
+        if out.iter().any(|x: &IndicatorLine| x.period == line.period) {
+            continue;
+        }
+        let color = match line.color.as_str() {
+            "brass" | "up" | "down" | "violet" | "sky" | "amber" => line.color,
+            _ => "brass".into(),
+        };
+        out.push(IndicatorLine {
+            period: line.period,
+            color,
+            width: line.width.clamp(0.6, 3.0),
+            dashed: line.dashed,
+        });
+        if out.len() >= 4 {
+            break;
+        }
+    }
+    if out.is_empty() {
+        defaults.to_vec()
+    } else {
+        out
+    }
+}
+
+fn load_lines(
+    conn: &rusqlite::Connection,
+    key: &str,
+    legacy_key: &str,
+    defaults: &[IndicatorLine],
+    width: f64,
+    dashed: bool,
+) -> Result<Vec<IndicatorLine>, String> {
+    if let Ok(Some(raw)) = db::get_setting(conn, key) {
+        if let Ok(lines) = serde_json::from_str::<Vec<IndicatorLine>>(&raw) {
+            if !lines.is_empty() {
+                return Ok(clean_lines(lines, defaults));
+            }
+        }
+    }
+    if let Ok(Some(raw)) = db::get_setting(conn, legacy_key) {
+        let periods = split_periods(&raw, defaults.iter().map(|l| l.period).collect());
+        return Ok(legacy_lines(&periods, width, dashed));
+    }
+    Ok(defaults.to_vec())
+}
+
 #[tauri::command]
 pub async fn get_chart_prefs(state: State<'_, AppState>) -> Result<ChartPrefs, String> {
     let conn = state_conn(&state)?;
     let def = ChartPrefs::default();
-    let ma_periods = db::get_setting(&conn, "chart.ma_periods")
-        .map_err(|e| err(e))?
-        .map(|v| split_periods(&v, def.ma_periods.clone()))
-        .unwrap_or(def.ma_periods.clone());
-    let ema_periods = db::get_setting(&conn, "chart.ema_periods")
-        .map_err(|e| err(e))?
-        .map(|v| split_periods(&v, def.ema_periods.clone()))
-        .unwrap_or(def.ema_periods.clone());
+    let ma_lines = load_lines(&conn, "chart.ma_lines", "chart.ma_periods", &def.ma_lines, 1.0, true)?;
+    let ema_lines = load_lines(&conn, "chart.ema_lines", "chart.ema_periods", &def.ema_lines, 1.2, false)?;
     Ok(ChartPrefs {
         ma_enabled: setting_bool(&conn, "chart.ma_enabled", def.ma_enabled),
-        ma_periods,
+        ma_lines,
         ema_enabled: setting_bool(&conn, "chart.ema_enabled", def.ema_enabled),
-        ema_periods,
+        ema_lines,
         kdj_enabled: setting_bool(&conn, "chart.kdj_enabled", def.kdj_enabled),
         kdj_n: setting_i64(&conn, "chart.kdj_n", def.kdj_n).clamp(2, 90),
         kdj_k: setting_i64(&conn, "chart.kdj_k", def.kdj_k).clamp(1, 20),
@@ -504,17 +591,18 @@ pub async fn get_chart_prefs(state: State<'_, AppState>) -> Result<ChartPrefs, S
 #[tauri::command]
 pub async fn save_chart_prefs(state: State<'_, AppState>, prefs: ChartPrefs) -> Result<(), String> {
     let conn = state_conn(&state)?;
-    let mut ma = prefs.ma_periods.into_iter().filter(|v| *v >= 2 && *v <= 250).collect::<Vec<_>>();
-    let mut ema = prefs.ema_periods.into_iter().filter(|v| *v >= 2 && *v <= 250).collect::<Vec<_>>();
-    ma.truncate(6);
-    ema.truncate(6);
-    if ma.is_empty() || ema.is_empty() {
-        return Err("指标周期不能为空".into());
+    let def = ChartPrefs::default();
+    let ma = clean_lines(prefs.ma_lines, &def.ma_lines);
+    let ema = clean_lines(prefs.ema_lines, &def.ema_lines);
+    if (prefs.ma_enabled && ma.is_empty()) || (prefs.ema_enabled && ema.is_empty()) {
+        return Err("启用指标时至少保留一条线".into());
     }
     db::set_setting(&conn, "chart.ma_enabled", if prefs.ma_enabled { "1" } else { "0" }).map_err(|e| err(e))?;
-    db::set_setting(&conn, "chart.ma_periods", &ma.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",")).map_err(|e| err(e))?;
+    db::set_setting(&conn, "chart.ma_lines", &serde_json::to_string(&ma).map_err(|e| e.to_string())?).map_err(|e| err(e))?;
+    db::set_setting(&conn, "chart.ma_periods", &ma.iter().map(|l| l.period.to_string()).collect::<Vec<_>>().join(",")).map_err(|e| err(e))?;
     db::set_setting(&conn, "chart.ema_enabled", if prefs.ema_enabled { "1" } else { "0" }).map_err(|e| err(e))?;
-    db::set_setting(&conn, "chart.ema_periods", &ema.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",")).map_err(|e| err(e))?;
+    db::set_setting(&conn, "chart.ema_lines", &serde_json::to_string(&ema).map_err(|e| e.to_string())?).map_err(|e| err(e))?;
+    db::set_setting(&conn, "chart.ema_periods", &ema.iter().map(|l| l.period.to_string()).collect::<Vec<_>>().join(",")).map_err(|e| err(e))?;
     db::set_setting(&conn, "chart.kdj_enabled", if prefs.kdj_enabled { "1" } else { "0" }).map_err(|e| err(e))?;
     db::set_setting(&conn, "chart.kdj_n", &prefs.kdj_n.clamp(2, 90).to_string()).map_err(|e| err(e))?;
     db::set_setting(&conn, "chart.kdj_k", &prefs.kdj_k.clamp(1, 20).to_string()).map_err(|e| err(e))?;
@@ -539,6 +627,31 @@ pub fn window_control(window: tauri::WebviewWindow, action: String) -> Result<()
         _ => return Err("unknown window action".into()),
     }
     .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn export_text(
+    state: State<'_, AppState>,
+    filename: String,
+    content: String,
+) -> Result<String, String> {
+    let mut safe = String::new();
+    for ch in filename.chars() {
+        if ch.is_alphanumeric() || matches!(ch, '.' | '-' | '_' | '(' | ')' | '（' | '）') {
+            safe.push(ch);
+        }
+    }
+    if !safe.to_ascii_lowercase().ends_with(".txt") {
+        safe.push_str(".txt");
+    }
+    if safe == ".txt" {
+        safe = "export.txt".into();
+    }
+    let dir = state.data_dir.join("exports");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(safe);
+    std::fs::write(&path, content).map_err(|e| e.to_string())?;
+    Ok(path.display().to_string())
 }
 
 #[tauri::command]

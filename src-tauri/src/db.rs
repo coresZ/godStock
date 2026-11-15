@@ -230,6 +230,18 @@ fn has_column(conn: &Connection, table: &str, column: &str) -> bool {
 }
 
 fn migrate(conn: &Connection) -> Result<()> {
+    conn.execute("DELETE FROM index_daily WHERE length(date) <= 10", [])?;
+    let series_version: Option<String> = conn
+        .query_row("SELECT value FROM settings WHERE key='index_series_v'", [], |r| r.get(0))
+        .optional()?;
+    if series_version.as_deref() != Some("3") {
+        conn.execute("DELETE FROM index_daily", [])?;
+        conn.execute(
+            "INSERT INTO settings(key,value) VALUES ('index_series_v','3')
+             ON CONFLICT(key) DO UPDATE SET value='3'",
+            [],
+        )?;
+    }
     if !has_column(conn, "day_snapshot", "open_limit") {
         conn.execute("ALTER TABLE day_snapshot ADD COLUMN open_limit INTEGER NOT NULL DEFAULT 0", [])?;
     }
@@ -781,7 +793,7 @@ pub fn load_index_series(conn: &Connection, code: &str) -> Result<Vec<(String, f
     let mut rows = Vec::new();
     {
         let mut st = conn.prepare(
-            "SELECT date,close,pct FROM index_daily WHERE code=?1 ORDER BY date DESC LIMIT 24",
+            "SELECT date,close,pct FROM index_daily WHERE code=?1 ORDER BY date DESC LIMIT 240",
         )?;
         let iter = st.query_map(params![code], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?, r.get::<_, f64>(2)?))

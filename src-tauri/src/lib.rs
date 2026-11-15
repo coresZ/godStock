@@ -52,6 +52,7 @@ pub fn run() {
             commands::recent_stocks,
             commands::get_settings,
             commands::set_theme,
+            commands::set_ui_scale,
             commands::get_data_info,
             commands::clear_cache,
             commands::get_watch_groups,
@@ -62,6 +63,7 @@ pub fn run() {
             commands::remove_watch_stock,
             commands::get_chart_prefs,
             commands::save_chart_prefs,
+            commands::export_text,
             commands::window_control,
             commands::open_data_dir
         ])

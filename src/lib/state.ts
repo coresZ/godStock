@@ -29,6 +29,7 @@ export type SortKey =
 
 export interface AppState {
   theme: Theme;
+  uiScale: number;
   calendar: CalendarInfo | null;
   date: string;
   day: DayPayload | null;
@@ -53,6 +54,7 @@ export interface AppState {
   watchGroups: WatchGroup[];
   watchGroupId: number | null;
   watchCollapsed: boolean;
+  chartDock: "watch" | "insight";
   dataInfo: DataInfo | null;
   sync: "idle" | "loading" | "live" | "cache" | "error";
   lastSyncAt: number;
@@ -62,6 +64,7 @@ export interface AppState {
 
 export const state: AppState = {
   theme: "dark",
+  uiScale: 1.10,
   calendar: null,
   date: "",
   day: null,
@@ -79,9 +82,19 @@ export const state: AppState = {
   chartRange: 120,
   chartPrefs: {
     maEnabled: false,
-    maPeriods: [5, 10, 20, 60],
+    maLines: [
+      { period: 5, color: "sky", width: 1, dashed: true },
+      { period: 10, color: "amber", width: 1, dashed: true },
+      { period: 20, color: "violet", width: 1, dashed: true },
+      { period: 60, color: "brass", width: 1, dashed: true },
+    ],
     emaEnabled: true,
-    emaPeriods: [5, 10, 20, 60],
+    emaLines: [
+      { period: 5, color: "brass", width: 1.2, dashed: false },
+      { period: 10, color: "up", width: 1.2, dashed: false },
+      { period: 20, color: "down", width: 1.2, dashed: false },
+      { period: 60, color: "violet", width: 1.2, dashed: false },
+    ],
     kdjEnabled: true,
     kdjN: 9,
     kdjK: 3,
@@ -95,6 +108,7 @@ export const state: AppState = {
   watchGroups: [],
   watchGroupId: null,
   watchCollapsed: false,
+  chartDock: "watch",
   dataInfo: null,
   sync: "idle",
   lastSyncAt: 0,

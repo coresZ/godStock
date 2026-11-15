@@ -239,6 +239,12 @@ export function renderLadder(): string {
         const isMax = streak === max;
         const compact = streak <= 1;
         const useHero = isMax && stocks.length === 1 && !compact;
+        const ordered = [...stocks].sort((a, b) => {
+          const av = a.firstSeal > 0 ? a.firstSeal : Number.MAX_SAFE_INTEGER;
+          const bv = b.firstSeal > 0 ? b.firstSeal : Number.MAX_SAFE_INTEGER;
+          if (av !== bv) return av - bv;
+          return a.code.localeCompare(b.code);
+        });
         return `<section class="ladder-tier ${isMax ? "max" : ""}" style="--tier:${i}">
           <div class="tier-gutter">
             ${
@@ -247,10 +253,10 @@ export function renderLadder(): string {
                 : `<div class="tier-number ${streak >= 10 ? "double" : ""}">${streak}<span class="tier-unit">板</span></div>`
             }
             <div class="tier-label">${isMax ? "市场最高" : compact ? "今日首封" : "连续涨停"}</div>
-            <span class="tier-count">${stocks.length}</span>
+            <span class="tier-count">${ordered.length}</span>
           </div>
           <div class="tier-cards">
-            ${stocks.map((s, idx) => (useHero ? heroCard(s) : stockCard(s, compact, idx))).join("")}
+            ${ordered.map((s, idx) => (useHero ? heroCard(s) : stockCard(s, compact, idx))).join("")}
           </div>
         </section>`;
       })

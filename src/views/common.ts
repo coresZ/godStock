@@ -56,7 +56,7 @@ export function renderRail(): string {
         ${icon(state.theme === "dark" ? "sun" : "moon", 18)}
       </button>
       <button class="rail-tool" data-action="settings" title="设置" aria-label="设置">${icon("settings", 18)}</button>
-      <span class="rail-version">v1.1</span>
+      <span class="rail-version">v1.2</span>
     </div>
   </aside>`;
 }
@@ -133,7 +133,7 @@ export function renderIndices(): string {
               <span class="index-name">${esc(shortIndexName(q.name))}</span>
               <span class="index-value">${q.price.toFixed(2)}<span class="index-pct ${q.pct > 0 ? "text-up" : q.pct < 0 ? "text-down" : "text-flat"}">${fmtPct(q.pct)}</span></span>
             </div>
-            ${sparkline(q.spark, 38, 18, "index-spark")}
+            ${sparkline(q.spark, 44, 20, "index-spark", q.pct)}
           </button>`,
         )
         .join("")

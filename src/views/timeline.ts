@@ -3,6 +3,30 @@ import { breakInfo, downInfo, timestampToTimelineMinute, timelineMinuteLabel } f
 import { state } from "../lib/state";
 import { renderViewHead } from "./common";
 
+export function timelineExportText(): string {
+  const day = state.day;
+  if (!day) return "";
+  const events = buildEvents();
+  const byMinute = clusters(events);
+  const dateText = `${day.date.slice(0, 4)}-${day.date.slice(4, 6)}-${day.date.slice(6, 8)}`;
+  const lines: string[] = [
+    "天梯 · A股涨停复盘 · 盘口时间轴",
+    `交易日：${dateText} ${day.weekday}`,
+    `涨停 ${day.stats.total} · 炸板 ${day.stats.openLimit} · 跌停 ${day.stats.limitDown}`,
+    "说明：涨停为首封时间；炸板 / 跌停时间由分时采样推断，带 ≈ 标记。",
+    "",
+  ];
+  for (const group of byMinute) {
+    lines.push(`${timelineMinuteLabel(group.minute)}`);
+    for (const e of group.items) {
+      lines.push(`  ${KIND_LABEL[e.kind]}  ${e.name} ${e.code}  ${e.clock}${e.approx ? "≈" : ""}  ${fmtPct(e.pct)}`);
+    }
+    lines.push("");
+  }
+  lines.push("仅供学习复盘，不构成投资建议。");
+  return lines.join("\r\n");
+}
+
 type EventKind = "up" | "break" | "down";
 
 interface TimelineEvent {
@@ -156,6 +180,7 @@ export function renderTimeline(): string {
         <h2 class="section-title">盘口时间轴</h2>
         <span class="section-sub">集合竞价 → 收盘 · 涨停 / 炸板 / 跌停</span>
         <span class="section-note">${events.length ? `${events.length} 个落点` : ""}</span>
+        <button class="timeline-export" data-action="export-timeline" ${day ? "" : "disabled"}>${icon("download", 13)} 导出 TXT</button>
       </div>
       ${body}
     </div>

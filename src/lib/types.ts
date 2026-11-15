@@ -1,5 +1,5 @@
 export type Theme = "dark" | "light";
-export type Period = "15m" | "30m" | "60m" | "day" | "week" | "month" | "year";
+export type Period = "1m" | "15m" | "30m" | "60m" | "day" | "week" | "month" | "year";
 export type ViewName = "ladder" | "pool" | "timeline" | "chart";
 export type PoolKind = "limitUp" | "openLimit" | "limitDown";
 
@@ -118,6 +118,7 @@ export interface SearchItem {
 
 export interface Settings {
   theme: Theme;
+  uiScale: number;
 }
 
 export interface WatchStock {
@@ -137,11 +138,18 @@ export interface WatchAddResult {
   skipped: number;
 }
 
+export interface IndicatorLine {
+  period: number;
+  color: string;
+  width: number;
+  dashed: boolean;
+}
+
 export interface ChartPrefs {
   maEnabled: boolean;
-  maPeriods: number[];
+  maLines: IndicatorLine[];
   emaEnabled: boolean;
-  emaPeriods: number[];
+  emaLines: IndicatorLine[];
   kdjEnabled: boolean;
   kdjN: number;
   kdjK: number;

@@ -28,6 +28,8 @@ const ICONS: Record<string, string> = {
   moon: '<path d="M19.5 14.2A7.8 7.8 0 0 1 9.8 4.5 8 8 0 1 0 19.5 14.2Z"/>',
   check: '<path d="m5 12.5 4.3 4.3L19 7"/>',
   info: '<circle cx="12" cy="12" r="8"/><path d="M12 11v5M12 8.2v.2"/>',
+  sliders: '<path d="M4 8h9M17 8h3M4 16h3M11 16h9"/><circle cx="15" cy="8" r="2"/><circle cx="9" cy="16" r="2"/>',
+  download: '<path d="M12 4v11m0 0 4-4m-4 4-4-4M5 20h14"/>',
   trash: '<path d="M5 7h14M9.5 7V5.2h5V7M7.2 7l.7 12.2h8.2L16.8 7M10 10.5v5M14 10.5v5"/>',
   folder: '<path d="M3.8 7.5c0-1 .8-1.8 1.8-1.8h4l1.7 2h7.1c1 0 1.8.8 1.8 1.8v8c0 1-.8 1.8-1.8 1.8H5.6c-1 0-1.8-.8-1.8-1.8Z"/>',
   expand: '<path d="M8 3.8H4v4M16 3.8h4v4M20 16v4h-4M4 16v4h4"/>',
@@ -171,19 +173,27 @@ export function sparkline(
   width = 96,
   height = 30,
   className = "",
+  direction?: number,
 ): string {
   if (!values.length) return "";
-  const min = Math.min(...values, 0);
-  const max = Math.max(...values, 0.001);
+  let min = Math.min(...values);
+  let max = Math.max(...values);
+  const mid = (min + max) / 2;
+  // 给窄幅震荡一个最小视觉跨度，避免指数分时被压成一条横线。
+  const minSpan = Math.max(Math.abs(mid) * 0.0012, 0.02);
+  if (max - min < minSpan) {
+    min = mid - minSpan / 2;
+    max = mid + minSpan / 2;
+  }
   const span = max - min || 1;
   const n = values.length;
   const points = values.map((v, i) => {
     const x = (i / Math.max(1, n - 1)) * width;
-    const y = height - 2 - ((v - min) / span) * (height - 4);
+    const y = height - 3 - ((v - min) / span) * (height - 6);
     return `${x.toFixed(2)},${y.toFixed(2)}`;
   });
   const area = `M0,${height} L${points.join(" L")} L${width},${height} Z`;
-  const last = values[n - 1];
+  const last = direction ?? values[n - 1];
   const cls = last > 0.1 ? "spark-up" : last < -0.1 ? "spark-down" : "spark-flat";
   return `<svg class="spark ${cls} ${className}" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-hidden="true"><path class="spark-area" d="${area}"/><polyline class="spark-line" points="${points.join(" ")}"/></svg>`;
 }

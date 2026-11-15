@@ -464,6 +464,7 @@ fn secid(code: &str) -> String {
 
 fn period_klt(period: &str) -> &'static str {
     match period {
+        "1m" => "1",
         "15m" => "15",
         "30m" => "30",
         "60m" => "60",
@@ -471,6 +472,14 @@ fn period_klt(period: &str) -> &'static str {
         "month" => "103",
         "year" => "106",
         _ => "101",
+    }
+}
+
+fn kline_limit(period: &str) -> i64 {
+    match period {
+        "1m" => 1200,
+        "15m" | "30m" | "60m" => 800,
+        _ => 500,
     }
 }
 
@@ -509,8 +518,9 @@ fn parse_kline_json(data: &Value) -> Result<(String, Vec<KlineCandle>)> {
 pub async fn fetch_kline(client: &Client, code: &str, period: &str) -> Result<(String, Vec<KlineCandle>)> {
     let sid = secid(code);
     let klt = period_klt(period);
+    let lmt = kline_limit(period);
     let url = format!(
-        "https://push2his.eastmoney.com/api/qt/stock/kline/get?secid={sid}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt={klt}&fqt=1&end=20500101&lmt=400"
+        "https://push2his.eastmoney.com/api/qt/stock/kline/get?secid={sid}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt={klt}&fqt=1&end=20500101&lmt={lmt}"
     );
     let json = get_json(client, &url, EM_REFERER).await?;
     parse_kline_json(&json["data"])
@@ -518,8 +528,9 @@ pub async fn fetch_kline(client: &Client, code: &str, period: &str) -> Result<(S
 
 pub async fn fetch_index_kline(client: &Client, sid: &str, period: &str) -> Result<(String, Vec<KlineCandle>)> {
     let klt = period_klt(period);
+    let lmt = kline_limit(period);
     let url = format!(
-        "https://push2his.eastmoney.com/api/qt/stock/kline/get?secid={sid}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt={klt}&fqt=1&end=20500101&lmt=400"
+        "https://push2his.eastmoney.com/api/qt/stock/kline/get?secid={sid}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt={klt}&fqt=1&end=20500101&lmt={lmt}"
     );
     let json = get_json(client, &url, EM_REFERER).await?;
     parse_kline_json(&json["data"])
@@ -531,26 +542,58 @@ pub async fn fetch_indices(client: &Client) -> Vec<(String, Vec<(String, f64, f6
         ("0.399001", "深证成指"),
         ("0.399006", "创业板指"),
     ];
+    let quote_url = "https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&secids=1.000001,0.399001,0.399006&fields=f2,f3,f4,f12,f14";
+    let mut quote_pct: HashMap<String, f64> = HashMap::new();
+    if let Ok(quote) = get_json(client, quote_url, EM_REFERER).await {
+        if let Some(items) = quote["data"]["diff"].as_array() {
+            for item in items {
+                let code = string(&item["f12"]);
+                let pct = num(&item["f3"]);
+                if !code.is_empty() {
+                    quote_pct.insert(code, pct);
+                }
+            }
+        }
+    }
     let mut out = Vec::new();
     for (sid, name) in list {
         let url = format!(
-            "https://push2his.eastmoney.com/api/qt/stock/kline/get?secid={sid}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt=101&fqt=1&end=20500101&lmt=24"
+            "https://push2his.eastmoney.com/api/qt/stock/kline/get?secid={sid}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt=1&fqt=1&end=20500101&lmt=260"
         );
         let result = get_json(client, &url, EM_REFERER).await;
         let Ok(json) = result else { continue };
-        let mut rows = Vec::new();
+        let mut raw: Vec<(String, f64, f64)> = Vec::new();
         if let Some(lines) = json["data"]["klines"].as_array() {
             for line in lines {
                 let Some(text) = line.as_str() else { continue };
                 let parts: Vec<&str> = text.split(',').collect();
-                if parts.len() < 9 {
+                if parts.len() < 3 {
                     continue;
                 }
-                rows.push((
-                    parts[0].to_string(),
-                    parts[2].parse::<f64>().unwrap_or(0.0),
-                    parts[8].parse::<f64>().unwrap_or(0.0),
-                ));
+                let open = parts[1].parse::<f64>().unwrap_or(0.0);
+                let close = parts[2].parse::<f64>().unwrap_or(0.0);
+                if open > 0.0 && close > 0.0 {
+                    raw.push((parts[0].to_string(), open, close));
+                }
+            }
+        }
+        let Some(last_day) = raw.last().map(|r| r.0.chars().take(10).collect::<String>()) else {
+            continue;
+        };
+        let day_rows: Vec<&(String, f64, f64)> = raw.iter().filter(|r| r.0.starts_with(&last_day)).collect();
+        let Some(first) = day_rows.first() else { continue };
+        let base = first.1;
+        let mut rows: Vec<(String, f64, f64)> = day_rows
+            .iter()
+            .map(|r| {
+                let pct = if base > 0.0 { (r.2 / base - 1.0) * 100.0 } else { 0.0 };
+                (r.0.clone(), r.2, pct)
+            })
+            .collect();
+        // 1 分钟接口只能推算当日涨跌幅；用指数快照接口补回精确涨幅。
+        if let Some(pct) = quote_pct.get(sid.split('.').nth(1).unwrap_or("")) {
+            if let Some(last) = rows.last_mut() {
+                last.2 = *pct;
             }
         }
         if !rows.is_empty() {

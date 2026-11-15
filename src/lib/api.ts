@@ -48,6 +48,9 @@ export const api = {
   recentStocks: () => call<SearchItem[]>("recent_stocks"),
   getSettings: () => call<Settings>("get_settings"),
   setTheme: (theme: Theme) => call<void>("set_theme", { theme }),
+  setUiScale: (scale: number) => call<number>("set_ui_scale", { scale }),
+  exportText: (filename: string, content: string) =>
+    call<string>("export_text", { filename, content }),
   getDataInfo: () => call<DataInfo>("get_data_info"),
   clearCache: () => call<void>("clear_cache"),
   getWatchGroups: () => call<WatchGroup[]>("get_watch_groups"),

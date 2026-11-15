@@ -1,14 +1,14 @@
 import "./styles.css";
 import { api } from "./lib/api";
-import { availableDates, filterStocks, neighbors, parseHash, state } from "./lib/state";
+import { availableDates, filterStocks, findStock, neighbors, parseHash, state } from "./lib/state";
 import type { ChartPrefs, ChartSelection, Period, SearchItem, Theme, WatchStock } from "./lib/types";
-import { esc, fmtBytes, fmtShortDate, icon, relTime, weekdayFromYmd } from "./lib/ui";
+import { esc, fmtBytes, fmtClock, fmtMoney, fmtShortDate, icon, relTime, tierName, weekdayFromYmd } from "./lib/ui";
 import { KLineChart } from "./chart";
-import { chartSwitchContext, indicatorSummary, renderChartToolbar, renderChartView, renderWatchPanel } from "./views/chart";
+import { chartSwitchContext, indicatorSummary, normalizeChartRange, renderChartDock, renderChartToolbar, renderChartView, updateChartDock } from "./views/chart";
 import { renderIndices, renderRail, renderTitlebar, syncLabel } from "./views/common";
 import { renderLadder } from "./views/ladder";
 import { renderPool, updatePoolStage, updatePoolTable } from "./views/pool";
-import { renderTimeline } from "./views/timeline";
+import { renderTimeline, timelineExportText } from "./views/timeline";
 
 let chart: KLineChart | null = null;
 let dayToken = 0;
@@ -25,6 +25,8 @@ let overlayKind:
   | null = null;
 let overlayRoot!: HTMLElement;
 let toastRoot!: HTMLElement;
+let stockHover!: HTMLElement;
+let hoverAnchor: { left: number; top: number; width: number; height: number; bottom: number } | null = null;
 let searchTimer: number | undefined;
 let booted = false;
 
@@ -50,8 +52,17 @@ async function start(): Promise<void> {
   try {
     const settings = await api.getSettings();
     state.theme = settings.theme === "light" ? "light" : "dark";
+    state.uiScale = Math.max(0.9, Math.min(1.25, Number(settings.uiScale) || 1.10));
   } catch {
     state.theme = "dark";
+    state.uiScale = 1.10;
+  }
+  try {
+    await api.setUiScale(state.uiScale);
+    // WebView2 的缩放会在下一帧才反映到布局宽度，等一次重排再挂载界面。
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+  } catch {
+    /* browser preview has no native zoom */
   }
   applyTheme(state.theme, false);
 
@@ -74,7 +85,7 @@ async function start(): Promise<void> {
   bindGlobals();
   booted = true;
 
-  void loadIndices(false);
+  void loadIndices(true);
   await ensureCalendar();
   if (state.date) await loadDay(state.date, true);
   if (state.view === "chart" && state.chartStock) {
@@ -95,9 +106,11 @@ function renderShell(): void {
     </div>
   </div>
   <div id="overlay-root"></div>
+  <div id="stock-hover" class="stock-hover" hidden></div>
   <div id="toast-stack" class="toast-stack" aria-live="polite"></div>`;
   overlayRoot = document.getElementById("overlay-root")!;
   toastRoot = document.getElementById("toast-stack")!;
+  stockHover = document.getElementById("stock-hover")!;
   renderMain();
   updateChrome();
 }
@@ -465,6 +478,10 @@ function bindGlobals(): void {
   app.addEventListener("change", (e) => handleChange(e));
   app.addEventListener("keydown", (e) => handleKeydown(e));
   app.addEventListener("contextmenu", (e) => handleContextMenu(e));
+  app.addEventListener("pointerover", handleStockHover);
+  app.addEventListener("pointermove", moveStockHover);
+  app.addEventListener("pointerout", hideStockHover);
+  window.addEventListener("scroll", hideHover, true);
   const titlebar = document.querySelector<HTMLElement>(".titlebar");
   const interactive = (target: HTMLElement) => Boolean(target.closest("button,input,a,.titlebar-search,.window-controls"));
   titlebar?.addEventListener("mousedown", (e) => {
@@ -528,8 +545,73 @@ function handleChange(e: Event): void {
   }
 }
 
+function hideHover(): void {
+  hoverAnchor = null;
+  if (!stockHover) return;
+  stockHover.hidden = true;
+  stockHover.classList.remove("show");
+}
+
+function handleStockHover(e: PointerEvent): void {
+  const card = (e.target as Element).closest<HTMLElement>(".stock-card");
+  if (!card || overlayKind) {
+    hideHover();
+    return;
+  }
+  const s = findStock(card.dataset.stockCode || "");
+  if (!s) {
+    hideHover();
+    return;
+  }
+  stockHover.innerHTML = `<div class="hover-head"><b>${esc(s.name)}</b><span>${s.code}</span><em>${esc(tierName(s.streak))}</em></div>
+    <div class="hover-meta">
+      <span><i>首封</i>${fmtClock(s.firstSeal)}</span>
+      <span><i>封单</i>${s.sealAmount > 0 ? fmtMoney(s.sealAmount) : "—"}</span>
+      <span><i>换手</i>${s.turnoverRate.toFixed(2)}%</span>
+      <span><i>开板</i>${s.openNum} 次</span>
+    </div>`;
+
+  const rect = card.getBoundingClientRect();
+  hoverAnchor = { left: rect.left, top: rect.top, width: rect.width, height: rect.height, bottom: rect.bottom };
+  stockHover.hidden = false;
+  stockHover.classList.add("show");
+  positionHover();
+}
+
+function positionHover(): void {
+  if (!stockHover || stockHover.hidden || !hoverAnchor) return;
+  const pad = 12;
+  const gap = 9;
+  const w = stockHover.offsetWidth || 238;
+  const h = stockHover.offsetHeight || 150;
+  let left = hoverAnchor.left + hoverAnchor.width - w;
+  if (left + w > window.innerWidth - pad) left = window.innerWidth - w - pad;
+  if (left < pad) left = pad;
+  let top = hoverAnchor.top - h - gap;
+  if (top < 56) top = hoverAnchor.bottom + gap;
+  if (top + h > window.innerHeight - pad) top = window.innerHeight - h - pad;
+  stockHover.style.left = `${Math.round(left)}px`;
+  stockHover.style.top = `${Math.round(top)}px`;
+}
+
+function moveStockHover(_e: PointerEvent): void {
+  /* Tooltip is anchored to the card; no cursor-follow flicker. */
+}
+
+function hideStockHover(e: PointerEvent): void {
+  const card = (e.target as Element).closest<HTMLElement>(".stock-card");
+  if (!card) return;
+  const next = e.relatedTarget as Element | null;
+  if (next && card.contains(next)) return;
+  hideHover();
+}
+
 function handleClick(e: MouseEvent): void {
   const target = e.target as HTMLElement;
+  const periodMore = target.closest<HTMLElement>(".period-more");
+  document.querySelectorAll<HTMLElement>(".period-more.is-open").forEach((el) => {
+    if (el !== periodMore) el.classList.remove("is-open");
+  });
   const win = target.closest<HTMLElement>("[data-win]");
   if (win) {
     const action = win.dataset.win as "minimize" | "maximize" | "close";
@@ -550,7 +632,9 @@ function handleClick(e: MouseEvent): void {
   if (periodBtn) {
     const p = periodBtn.dataset.chartPeriod as Period;
     if (p !== state.chartPeriod) {
+      const wasIntradayMinute = state.chartPeriod === "1m";
       state.chartPeriod = p;
+      state.chartRange = p === "1m" && !wasIntradayMinute && state.chartRange !== 0 ? 240 : normalizeChartRange(p, state.chartRange);
       state.chartLoading = true;
       renderMain({ animate: false });
       void loadChart();
@@ -619,10 +703,16 @@ function handleClick(e: MouseEvent): void {
     openChart(stockEl.dataset.stockCode!, stockEl.dataset.stockName || "");
     return;
   }
+  const dockTab = target.closest<HTMLElement>("[data-dock-tab]");
+  if (dockTab) {
+    state.chartDock = dockTab.dataset.dockTab === "insight" ? "insight" : "watch";
+    updateChartDock();
+    return;
+  }
   const watchGroupBtn = target.closest<HTMLElement>("[data-watch-group]");
   if (watchGroupBtn) {
     state.watchGroupId = Number(watchGroupBtn.dataset.watchGroup);
-    updateWatchPanel();
+    updateChartDock();
     return;
   }
   const sector = target.closest<HTMLElement>("[data-sector-code]");
@@ -675,9 +765,11 @@ function handleClick(e: MouseEvent): void {
         openWatchAddDialog([watchStockFromSelection(state.chartStock)], "把当前股票加入自选");
       }
       break;
-    case "watch-toggle":
-      state.watchCollapsed = !state.watchCollapsed;
-      updateWatchPanel();
+    case "period-menu":
+      actionEl.closest(".period-more")?.classList.toggle("is-open");
+      break;
+    case "export-timeline":
+      void exportTimeline();
       break;
     case "watch-create-group":
       openGroupDialog("create");
@@ -715,6 +807,10 @@ function handleClick(e: MouseEvent): void {
 
 function handleKeydown(e: KeyboardEvent): void {
   const target = e.target as HTMLElement;
+  if (e.key === "Escape") {
+    const openMenu = document.querySelector<HTMLElement>(".period-more.is-open");
+    if (openMenu) openMenu.classList.remove("is-open");
+  }
   if (e.key === "Escape" && overlayKind) {
     closeOverlay();
     return;
@@ -741,6 +837,23 @@ function toast(message: string, type: "" | "error" = ""): void {
     el.classList.add("is-out");
     window.setTimeout(() => el.remove(), 280);
   }, 4200);
+}
+
+async function exportTimeline(): Promise<void> {
+  const text = timelineExportText();
+  if (!text) {
+    toast("没有可导出的时间轴数据");
+    return;
+  }
+  try {
+    const rawDate = state.day?.date || state.date || "";
+    const date = rawDate.length === 8 ? `${rawDate.slice(0, 4)}-${rawDate.slice(4, 6)}-${rawDate.slice(6, 8)}` : rawDate || "timeline";
+    const path = await api.exportText(`盘口时间轴_${date}.txt`, text);
+    const name = path.split(/[\\/]/).pop() || "盘口时间轴.txt";
+    toast(`已导出：data/exports/${name}`);
+  } catch (e) {
+    toast(messageFrom(e, "导出失败"), "error");
+  }
 }
 
 function messageFrom(e: unknown, fallback: string): string {
@@ -780,11 +893,7 @@ async function loadWatchlist(): Promise<void> {
 }
 
 function updateWatchPanel(): void {
-  const old = document.querySelector<HTMLElement>(".watch-panel");
-  if (!old) return;
-  const tmp = document.createElement("div");
-  tmp.innerHTML = renderWatchPanel();
-  old.replaceWith(tmp.firstElementChild!);
+  updateChartDock();
 }
 
 function watchStockFromSelection(sel: ChartSelection): WatchStock {
@@ -967,6 +1076,36 @@ function openGroupDelete(): void {
   });
 }
 
+const LINE_COLORS: Array<{ value: string; label: string; css: string }> = [
+  { value: "brass", label: "铜金", css: "var(--brass)" },
+  { value: "up", label: "朱砂", css: "var(--up)" },
+  { value: "down", label: "青瓷", css: "var(--down)" },
+  { value: "violet", label: "紫藤", css: "var(--violet)" },
+  { value: "sky", label: "天青", css: "var(--sky)" },
+  { value: "amber", label: "琥珀", css: "var(--amber)" },
+];
+
+function lineEditor(kind: "ma" | "ema", label: string, enabled: boolean, lines: ChartPrefs["maLines"], desc: string): string {
+  return `<section class="indicator-editor">
+    <div class="indicator-editor-head">
+      <label class="indicator-switch"><input type="checkbox" id="pref-${kind}" ${enabled ? "checked" : ""} /><span></span><b>${label}</b><em>${desc}</em></label>
+      <span class="indicator-editor-hint">颜色 · 粗细 · 虚实</span>
+    </div>
+    <div class="line-editor">
+      ${lines
+        .map(
+          (line, i) => `<div class="line-row" data-line-kind="${kind}" data-index="${i}">
+            <label class="line-period"><span>周期</span><input class="line-input mono" data-field="period" type="number" min="2" max="250" value="${line.period}" /></label>
+            <label class="line-field color-field"><span class="line-swatch" style="background:${LINE_COLORS.find((c) => c.value === line.color)?.css || "var(--brass)"}"></span><select class="line-select" data-field="color">${LINE_COLORS.map((c) => `<option value="${c.value}" ${c.value === line.color ? "selected" : ""}>${c.label}</option>`).join("")}</select></label>
+            <label class="line-field"><select class="line-select" data-field="width">${[0.8, 1, 1.2, 1.5, 2, 2.5].map((w) => `<option value="${w}" ${Math.abs(w - line.width) < 0.01 ? "selected" : ""}>${w}px</option>`).join("")}</select></label>
+            <label class="line-field"><select class="line-select" data-field="dashed"><option value="0" ${!line.dashed ? "selected" : ""}>实线</option><option value="1" ${line.dashed ? "selected" : ""}>虚线</option></select></label>
+          </div>`,
+        )
+        .join("")}
+    </div>
+  </section>`;
+}
+
 function openIndicatorSettings(): void {
   const p = state.chartPrefs;
   closeOverlay();
@@ -974,27 +1113,24 @@ function openIndicatorSettings(): void {
   overlayRoot.innerHTML = `<div class="overlay modal-overlay" id="indicator-overlay">
     <div class="overlay-panel indicator-modal" role="dialog" aria-label="指标参数">
       <div class="modal-head">
-        <div><h2>指标参数</h2><p>MA / EMA / KDJ · 修改后立即应用到当前 K 线</p></div>
+        <div><h2>指标参数</h2><p>线条颜色、粗细与虚实，修改后立即应用</p></div>
         <button class="modal-close" data-close-indicator aria-label="关闭">${icon("close", 15)}</button>
       </div>
       <div class="modal-body">
-        <div class="indicator-group">
-          <label class="indicator-switch"><input type="checkbox" id="pref-ma" ${p.maEnabled ? "checked" : ""} /><span></span><b>MA</b><em>简单移动平均</em></label>
-          <input class="text-input mono" id="pref-ma-periods" value="${p.maPeriods.join(", ")}" placeholder="5, 10, 20, 60" />
-        </div>
-        <div class="indicator-group">
-          <label class="indicator-switch"><input type="checkbox" id="pref-ema" ${p.emaEnabled ? "checked" : ""} /><span></span><b>EMA</b><em>指数移动平均</em></label>
-          <input class="text-input mono" id="pref-ema-periods" value="${p.emaPeriods.join(", ")}" placeholder="5, 10, 20, 60" />
-        </div>
-        <div class="indicator-group kdj-row">
-          <label class="indicator-switch"><input type="checkbox" id="pref-kdj" ${p.kdjEnabled ? "checked" : ""} /><span></span><b>KDJ</b><em>随机指标</em></label>
-          <div class="kdj-inputs">
-            <label>N <input class="text-input mono" id="pref-kdj-n" type="number" min="2" max="90" value="${p.kdjN}" /></label>
-            <label>K <input class="text-input mono" id="pref-kdj-k" type="number" min="1" max="20" value="${p.kdjK}" /></label>
-            <label>D <input class="text-input mono" id="pref-kdj-d" type="number" min="1" max="20" value="${p.kdjD}" /></label>
+        ${lineEditor("ma", "MA", p.maEnabled, p.maLines, "简单移动平均")}
+        ${lineEditor("ema", "EMA", p.emaEnabled, p.emaLines, "指数移动平均")}
+        <section class="indicator-editor kdj-editor">
+          <div class="indicator-editor-head">
+            <label class="indicator-switch"><input type="checkbox" id="pref-kdj" ${p.kdjEnabled ? "checked" : ""} /><span></span><b>KDJ</b><em>随机指标</em></label>
+            <span class="indicator-editor-hint">N · K · D</span>
           </div>
-        </div>
-        <p class="modal-hint">周期写为逗号分隔数字，例如 5, 10, 20, 60；最多 4 条。参数保存在本地数据库。</p>
+          <div class="kdj-inputs">
+            <label>N <input class="line-input mono" id="pref-kdj-n" type="number" min="2" max="90" value="${p.kdjN}" /></label>
+            <label>K <input class="line-input mono" id="pref-kdj-k" type="number" min="1" max="20" value="${p.kdjK}" /></label>
+            <label>D <input class="line-input mono" id="pref-kdj-d" type="number" min="1" max="20" value="${p.kdjD}" /></label>
+          </div>
+        </section>
+        <p class="modal-hint">最多 4 条线；清空某条周期即可移除该线。参数保存到本地数据库，重启后保留。</p>
       </div>
       <div class="modal-foot">
         <button class="btn" data-close-indicator>取消</button>
@@ -1007,29 +1143,41 @@ function openIndicatorSettings(): void {
   overlay.addEventListener("mousedown", (ev) => {
     if (ev.target === overlay) closeOverlay();
   });
+  overlay.querySelectorAll<HTMLSelectElement>('[data-field="color"]').forEach((sel) => {
+    sel.addEventListener("change", () => {
+      const swatch = sel.parentElement?.querySelector<HTMLElement>(".line-swatch");
+      if (swatch) swatch.style.background = LINE_COLORS.find((c) => c.value === sel.value)?.css || "var(--brass)";
+    });
+  });
   overlay.querySelector("#indicator-apply")?.addEventListener("click", async () => {
-    const parsePeriods = (id: string) => {
-      const el = overlay.querySelector<HTMLInputElement>(id)!;
-      const values = el.value
-        .split(/[,\s，]+/)
-        .map((v) => Number(v))
-        .filter((v) => Number.isFinite(v) && v >= 2 && v <= 250);
-      return [...new Set(values)].slice(0, 4);
+    const collect = (kind: "ma" | "ema") => {
+      const rows = Array.from(overlay.querySelectorAll<HTMLElement>(`[data-line-kind="${kind}"]`));
+      const out: ChartPrefs["maLines"] = [];
+      for (const row of rows) {
+        const period = Number(row.querySelector<HTMLInputElement>('[data-field="period"]')?.value);
+        if (!Number.isFinite(period) || period < 2 || period > 250) continue;
+        if (out.some((line) => line.period === period)) continue;
+        const color = row.querySelector<HTMLSelectElement>('[data-field="color"]')?.value || "brass";
+        const width = Number(row.querySelector<HTMLSelectElement>('[data-field="width"]')?.value) || 1;
+        const dashed = row.querySelector<HTMLSelectElement>('[data-field="dashed"]')?.value === "1";
+        out.push({ period: Math.round(period), color, width, dashed });
+      }
+      return out.slice(0, 4);
     };
-    const maPeriods = parsePeriods("#pref-ma-periods");
-    const emaPeriods = parsePeriods("#pref-ema-periods");
+    const maLines = collect("ma");
+    const emaLines = collect("ema");
     const maEnabled = overlay.querySelector<HTMLInputElement>("#pref-ma")!.checked;
     const emaEnabled = overlay.querySelector<HTMLInputElement>("#pref-ema")!.checked;
-    if (maEnabled && !maPeriods.length) return toast("MA 周期至少填写一个 2–250 的数字", "error");
-    if (emaEnabled && !emaPeriods.length) return toast("EMA 周期至少填写一个 2–250 的数字", "error");
+    if (maEnabled && !maLines.length) return toast("MA 至少保留一条 2–250 周期的线", "error");
+    if (emaEnabled && !emaLines.length) return toast("EMA 至少保留一条 2–250 周期的线", "error");
     const kdjN = Number(overlay.querySelector<HTMLInputElement>("#pref-kdj-n")!.value);
     const kdjK = Number(overlay.querySelector<HTMLInputElement>("#pref-kdj-k")!.value);
     const kdjD = Number(overlay.querySelector<HTMLInputElement>("#pref-kdj-d")!.value);
     const next: ChartPrefs = {
       maEnabled,
-      maPeriods: maPeriods.length ? maPeriods : p.maPeriods,
+      maLines: maLines.length ? maLines : p.maLines,
       emaEnabled,
-      emaPeriods: emaPeriods.length ? emaPeriods : p.emaPeriods,
+      emaLines: emaLines.length ? emaLines : p.emaLines,
       kdjEnabled: overlay.querySelector<HTMLInputElement>("#pref-kdj")!.checked,
       kdjN: Number.isFinite(kdjN) ? Math.max(2, Math.min(90, Math.round(kdjN))) : 9,
       kdjK: Number.isFinite(kdjK) ? Math.max(1, Math.min(20, Math.round(kdjK))) : 3,
@@ -1125,6 +1273,7 @@ function handleContextMenu(e: MouseEvent): void {
 
 function closeOverlay(): void {
   if (!overlayKind) return;
+  hideHover();
   overlayKind = null;
   state.searchOpen = false;
   state.settingsOpen = false;
@@ -1293,6 +1442,13 @@ function openSettings(): void {
             <button class="theme-option ${state.theme === "dark" ? "active" : ""}" data-theme-choice="dark">${icon("moon", 15)} 深色 · 墨夜</button>
             <button class="theme-option ${state.theme === "light" ? "active" : ""}" data-theme-choice="light">${icon("sun", 15)} 浅色 · 宣纸</button>
           </div>
+          <div class="setting-label" style="margin-top:18px">界面字号</div>
+          <div class="scale-choice">
+            <button class="scale-option ${state.uiScale < 1.06 ? "active" : ""}" data-ui-scale="1.02"><b>紧凑</b><em>102%</em></button>
+            <button class="scale-option ${state.uiScale >= 1.06 && state.uiScale < 1.14 ? "active" : ""}" data-ui-scale="1.10"><b>舒适</b><em>110%</em></button>
+            <button class="scale-option ${state.uiScale >= 1.14 ? "active" : ""}" data-ui-scale="1.18"><b>大字号</b><em>118%</em></button>
+          </div>
+          <p class="setting-hint" style="margin-top:8px">使用 WebView 系统缩放，K线会按新比例重绘，不会变模糊。</p>
         </div>
         <div class="setting-section">
           <div class="setting-label">本地数据</div>
@@ -1317,7 +1473,7 @@ function openSettings(): void {
         <div class="setting-section">
           <div class="setting-label">关于</div>
           <div class="about-text">
-            天梯 · A股涨停复盘　<b>v1.0</b><br />
+            天梯 · A股涨停复盘　<b>v1.2</b><br />
             涨停与板块数据来自同花顺公开接口，K线来自东方财富公开接口。<br />
             所有数据仅用于学习复盘，不构成投资建议。快捷键：<b>Ctrl K</b> 搜索，<b>← →</b> 切换交易日，<b>Esc</b> 关闭浮层。
           </div>
@@ -1341,6 +1497,23 @@ function openSettings(): void {
       overlay.querySelectorAll<HTMLElement>("[data-theme-choice]").forEach((b) => {
         b.classList.toggle("active", b.dataset.themeChoice === theme);
       });
+    });
+  });
+  overlay.querySelectorAll<HTMLElement>("[data-ui-scale]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const scale = Number(btn.dataset.uiScale);
+      if (!Number.isFinite(scale)) return;
+      try {
+        state.uiScale = await api.setUiScale(scale);
+        overlay.querySelectorAll<HTMLElement>("[data-ui-scale]").forEach((b) => {
+          b.classList.toggle("active", Number(b.dataset.uiScale) === state.uiScale);
+        });
+        await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+        window.dispatchEvent(new Event("resize"));
+        renderMain({ animate: false });
+      } catch (e) {
+        toast(messageFrom(e, "字号调整失败"), "error");
+      }
     });
   });
   overlay.querySelector("[data-open-data]")?.addEventListener("click", () => {

@@ -1,18 +1,23 @@
 import { esc, fmtAmount, fmtClock, fmtMoney, fmtPct, fmtPrice, fmtShortDate, icon, tierName, tone } from "../lib/ui";
 import { filterStocks, findStock, state } from "../lib/state";
-import type { ChartPrefs, KlineCandle } from "../lib/types";
+import type { ChartPrefs, KlineCandle, Period, WatchStock } from "../lib/types";
 
-const PERIODS: Array<{ value: import("../lib/types").Period; label: string }> = [
-  { value: "15m", label: "15分" },
-  { value: "30m", label: "30分" },
-  { value: "60m", label: "60分" },
+const PRIMARY_PERIODS: Array<{ value: Period; label: string }> = [
+  { value: "1m", label: "1分" },
   { value: "day", label: "日K" },
   { value: "week", label: "周K" },
   { value: "month", label: "月K" },
+];
+
+const MORE_PERIODS: Array<{ value: Period; label: string }> = [
+  { value: "15m", label: "15分钟" },
+  { value: "30m", label: "30分钟" },
+  { value: "60m", label: "60分钟" },
   { value: "year", label: "年K" },
 ];
 
 const PERIOD_LABEL: Record<string, string> = {
+  "1m": "1分钟",
   "15m": "15分钟",
   "30m": "30分钟",
   "60m": "60分钟",
@@ -22,19 +27,50 @@ const PERIOD_LABEL: Record<string, string> = {
   year: "年线",
 };
 
-const RANGES = [
-  { value: 60, label: "3月" },
-  { value: 120, label: "半年" },
-  { value: 250, label: "一年" },
-  { value: 0, label: "全部" },
-];
+export function rangeOptions(period: Period): Array<{ value: number; label: string }> {
+  if (period === "1m") {
+    return [
+      { value: 60, label: "1时" },
+      { value: 120, label: "半日" },
+      { value: 240, label: "全日" },
+      { value: 0, label: "全部" },
+    ];
+  }
+  if (period.endsWith("m")) {
+    return [
+      { value: 60, label: "60根" },
+      { value: 120, label: "120根" },
+      { value: 250, label: "250根" },
+      { value: 0, label: "全部" },
+    ];
+  }
+  return [
+    { value: 60, label: "3月" },
+    { value: 120, label: "半年" },
+    { value: 250, label: "一年" },
+    { value: 0, label: "全部" },
+  ];
+}
 
-function exchange(code: string, kind?: string): string {
+export function normalizeChartRange(period: Period, current: number): number {
+  const options = rangeOptions(period);
+  if (options.some((o) => o.value === current)) return current;
+  return period === "1m" ? 240 : 120;
+}
+
+function marketName(code: string, kind?: string): string {
   if (kind === "index") return "指数";
   if (code.startsWith("688")) return "科创板";
   if (code.startsWith("6") || code.startsWith("9")) return "沪市";
   if (code.startsWith("300") || code.startsWith("301")) return "创业板";
   return "深市";
+}
+
+function marketShort(code: string, market = ""): string {
+  if (market === "1" || code.startsWith("6") || code.startsWith("9")) return "沪";
+  if (code.startsWith("300") || code.startsWith("301")) return "创";
+  if (code.startsWith("688")) return "科";
+  return "深";
 }
 
 function stats(candles: KlineCandle[]) {
@@ -56,8 +92,8 @@ function stats(candles: KlineCandle[]) {
 
 export function indicatorSummary(prefs: ChartPrefs): string {
   const parts: string[] = [];
-  if (prefs.maEnabled) parts.push(`MA ${prefs.maPeriods.join(" / ")}`);
-  if (prefs.emaEnabled) parts.push(`EMA ${prefs.emaPeriods.join(" / ")}`);
+  if (prefs.maEnabled) parts.push(`MA ${prefs.maLines.map((l) => l.period).join(" / ")}`);
+  if (prefs.emaEnabled) parts.push(`EMA ${prefs.emaLines.map((l) => l.period).join(" / ")}`);
   if (prefs.kdjEnabled) parts.push(`KDJ (${prefs.kdjN}, ${prefs.kdjK}, ${prefs.kdjD})`);
   return parts.join(" · ") || "未启用指标";
 }
@@ -72,7 +108,7 @@ export function renderChartView(): string {
       <div class="empty-state" style="flex:1">
         <div class="empty-mark">${icon("chart", 22)}</div>
         <div class="empty-title">没有打开的股票</div>
-        <div class="empty-desc">搜索代码或名称，查看分时、日、周、月、年 K 线，叠加 MA / EMA / KDJ。</div>
+        <div class="empty-desc">搜索代码或名称，查看 1分、日、周、月与更多周期 K 线。</div>
         <button class="empty-action" data-action="search">搜索股票</button>
       </div>
     </section>`;
@@ -88,11 +124,10 @@ export function renderChartView(): string {
             ${state.chartLoading ? `<div class="chart-loading"><span class="loader"></span><span>正在刷新 ${esc(PERIOD_LABEL[state.chartPeriod] || "K线")}</span></div>` : ""}
             ${state.chartError ? `<div class="chart-error"><div class="error-title">K线没有加载</div><span>${esc(state.chartError)}</span><button class="chart-retry" data-action="chart-retry">重新加载</button></div>` : ""}
           </div>
-          <div class="chart-footnote"><span>行情数据 · 东方财富 · 前复权${stock.kind === "index" ? " · 指数" : ""}</span><span>${esc(indicatorSummary(state.chartPrefs))}</span></div>
+          <div class="chart-footnote"><span>东方财富 · 前复权${stock.kind === "index" ? " · 指数" : ""}</span><span>${esc(indicatorSummary(state.chartPrefs))}</span></div>
         </div>
-        <aside class="chart-side" id="chart-side">${renderChartSide()}</aside>
+        ${renderChartDock()}
       </div>
-      ${renderWatchPanel()}
     </div>
   </section>`;
 }
@@ -122,12 +157,11 @@ export function renderChartHead(): string {
   const stock = state.chartStock;
   if (!stock) return "";
   const data = state.chartData;
-  const switcher = chartSwitchContext();
   const candles = data?.candles ?? [];
   const st = stats(candles);
   const last = st?.last;
   const name = data?.name || stock.name || stock.code;
-  const code = stock.kind === "index" ? (stock.secid || stock.code) : data?.code || stock.code;
+  const code = stock.kind === "index" ? stock.secid || stock.code : data?.code || stock.code;
   const pct = last?.pct ?? 0;
   const change = last && st ? last.close - st.prev.close : 0;
   let dateLabel = "—";
@@ -140,22 +174,12 @@ export function renderChartHead(): string {
     }
   }
 
-  const identity = `<div class="chart-identity">
-    <div class="chart-name-line"><h1 class="chart-name">${esc(name)}</h1><span class="chart-code">${esc(code)} · ${exchange(stock.code, stock.kind)}</span></div>
-    <div class="chart-meta">
-      <span>${PERIOD_LABEL[state.chartPeriod]}</span><span class="sep"></span>
-      <span>${stock.kind === "index" ? "指数" : "前复权"}</span><span class="sep"></span>
-      <span>截至 ${dateLabel}</span>
-      ${data?.source === "cache" ? `<span class="sep"></span><span style="color:var(--brass)">本地缓存</span>` : ""}
-    </div>
-  </div>`;
-
   const quote = last
     ? `<div class="chart-quote">
         <span class="chart-price">${fmtPrice(last.close)}</span>
         <span class="chart-change">
-          <span class="text-${tone(pct)}">${fmtPct(pct)}</span>
-          <span class="text-${tone(change)}">${change >= 0 ? "+" : ""}${change.toFixed(2)}</span>
+          <b class="text-${tone(pct)}">${fmtPct(pct)}</b>
+          <em class="text-${tone(change)}">${change >= 0 ? "+" : ""}${change.toFixed(2)}</em>
         </span>
       </div>`
     : `<div class="chart-quote"><span class="chart-price" style="color:var(--faint)">—</span></div>`;
@@ -170,49 +194,97 @@ export function renderChartHead(): string {
     : "";
 
   return `<button class="back-btn" data-action="chart-back" title="返回" aria-label="返回">${icon("arrowLeft", 16)}</button>
-    ${identity}
+    <div class="chart-identity">
+      <div class="chart-name-line">
+        <h1 class="chart-name">${esc(name)}</h1>
+        <span class="chart-code">${esc(code)}</span>
+        <span class="chart-market">${marketName(stock.code, stock.kind)}</span>
+      </div>
+      <div class="chart-meta">
+        <span>${PERIOD_LABEL[state.chartPeriod]}</span><span class="meta-dot"></span>
+        <span>${stock.kind === "index" ? "指数" : "前复权"}</span><span class="meta-dot"></span>
+        <span>截至 ${dateLabel}</span>
+        ${data?.source === "cache" ? `<span class="meta-dot"></span><span class="cache-tag">本地缓存</span>` : ""}
+      </div>
+    </div>
     ${quote}
     <div class="chart-head-spacer"></div>
-    ${stock.kind === "stock" ? `<div class="chart-switch" title="在当前列表 / 自选分组中直接切换">
-      <button data-action="chart-prev" aria-label="上一只" ${switcher.list.length < 2 ? "disabled" : ""}>${icon("chevronLeft", 13)}</button>
-      <span>${switcher.index >= 0 ? switcher.index + 1 : "—"}<i>/</i>${switcher.list.length || "—"}</span>
-      <button data-action="chart-next" aria-label="下一只" ${switcher.list.length < 2 ? "disabled" : ""}>${icon("chevronRight", 13)}</button>
-    </div>` : ""}
-    ${stock.kind === "stock" ? `<button class="chart-watch-add" data-action="watch-add-current">${icon("wallet", 13)} 加自选</button>` : ""}
     ${snapshots}`;
 }
 
 export function renderChartToolbar(): string {
   const prefs = state.chartPrefs;
+  const moreActive = MORE_PERIODS.find((p) => p.value === state.chartPeriod);
+  const ranges = rangeOptions(state.chartPeriod);
   return `<div class="seg chart-periods" role="group" aria-label="K线周期">
-      ${PERIODS.map((p) => `<button class="${state.chartPeriod === p.value ? "active" : ""}" data-chart-period="${p.value}">${p.label}</button>`).join("")}
+      ${PRIMARY_PERIODS.map((p) => `<button class="${state.chartPeriod === p.value ? "active" : ""}" data-chart-period="${p.value}">${p.label}</button>`).join("")}
     </div>
-    <div class="seg" role="group" aria-label="显示区间">
-      ${RANGES.map((r) => `<button class="${state.chartRange === r.value ? "active" : ""}" data-chart-range="${r.value}">${state.chartPeriod.endsWith("m") ? (r.value ? `${r.value}根` : "全部") : r.label}</button>`).join("")}
+    <div class="period-more" id="period-more">
+      <button class="period-more-btn ${moreActive ? "active" : ""}" data-action="period-menu" aria-haspopup="true">
+        <span>${moreActive ? moreActive.label : "更多"}</span>${icon("chevronDown", 12)}
+      </button>
+      <div class="period-menu" role="menu">
+        ${MORE_PERIODS.map((p) => `<button class="${state.chartPeriod === p.value ? "active" : ""}" data-chart-period="${p.value}">${p.label}${state.chartPeriod === p.value ? icon("check", 12) : ""}</button>`).join("")}
+      </div>
+    </div>
+    <div class="seg chart-ranges" role="group" aria-label="显示区间">
+      ${ranges.map((r) => `<button class="${state.chartRange === r.value ? "active" : ""}" data-chart-range="${r.value}">${r.label}</button>`).join("")}
     </div>
     <span class="toolbar-divider"></span>
-    <button class="chip ${prefs.maEnabled ? "active" : ""}" data-indicator="ma" aria-pressed="${prefs.maEnabled}">MA</button>
-    <button class="chip ${prefs.emaEnabled ? "active" : ""}" data-indicator="ema" aria-pressed="${prefs.emaEnabled}">EMA</button>
-    <button class="chip ${prefs.kdjEnabled ? "active" : ""}" data-indicator="kdj" aria-pressed="${prefs.kdjEnabled}">KDJ</button>
-    <button class="chart-settings-btn" data-action="indicator-settings" title="指标参数">${icon("settings", 14)}<span>参数</span></button>
-    <span class="toolbar-spacer"></span>
-    <span class="chart-note">滚轮缩放 · 拖动平移 · 方向键查看</span>`;
+    <span class="toolbar-break"></span>
+    <div class="chart-indicators">
+      <button class="chip ${prefs.maEnabled ? "active" : ""}" data-indicator="ma" aria-pressed="${prefs.maEnabled}">MA</button>
+      <button class="chip ${prefs.emaEnabled ? "active" : ""}" data-indicator="ema" aria-pressed="${prefs.emaEnabled}">EMA</button>
+      <button class="chip ${prefs.kdjEnabled ? "active" : ""}" data-indicator="kdj" aria-pressed="${prefs.kdjEnabled}">KDJ</button>
+    </div>
+    <button class="chart-settings-btn" data-action="indicator-settings" title="MA / EMA 颜色、粗细、虚实；KDJ 系数">${icon("sliders", 14)}<span>参数</span></button>
+    <button class="chart-info" aria-label="指标说明">${icon("info", 13)}<span class="info-pop"><b>MA</b> 简单移动平均 · <b>EMA</b> 指数移动平均 · <b>KDJ</b> 随机指标。颜色、粗细、虚实可在「参数」里修改。指标仅辅助观察，不构成投资建议。</span></button>
+    <div class="chart-toolbar-spacer"></div>
+    <div class="chart-toolbar-actions">
+      ${state.chartStock?.kind === "stock" ? renderChartSwitchAction() : ""}
+      ${state.chartStock?.kind === "stock" ? `<button class="chart-watch-add" data-action="watch-add-current">${icon("plus", 12)} 加自选</button>` : ""}
+    </div>`;
 }
 
-export function renderChartSide(): string {
+function renderChartSwitchAction(): string {
+  const switcher = chartSwitchContext();
+  return `<div class="chart-switch" title="在当前列表 / 自选分组中直接切换">
+    <button data-action="chart-prev" aria-label="上一只" ${switcher.list.length < 2 ? "disabled" : ""}>${icon("chevronLeft", 13)}</button>
+    <span>${switcher.index >= 0 ? switcher.index + 1 : "—"}<i>/</i>${switcher.list.length || "—"}</span>
+    <button data-action="chart-next" aria-label="下一只" ${switcher.list.length < 2 ? "disabled" : ""}>${icon("chevronRight", 13)}</button>
+  </div>`;
+}
+
+function renderPerf(): string {
   const st = stats(state.chartData?.candles ?? []);
-  const stockSel = state.chartStock;
-  const limitUp = stockSel?.kind === "stock" ? findStock(stockSel.code) : undefined;
-  const openStock = stockSel?.kind === "stock" ? state.day?.openLimit.find((s) => s.code === stockSel.code) : undefined;
-  const downStock = stockSel?.kind === "stock" ? state.day?.limitDown.find((s) => s.code === stockSel.code) : undefined;
-  const code = stockSel?.code ?? "";
-  let archive = "";
-  if (stockSel?.kind === "index") {
-    archive = `<div class="archive"><div class="archive-tag">${icon("activity", 11)} 指数行情</div><div class="archive-empty">指数 K线不提供涨停档案。<br />可切换周期与 MA / EMA / KDJ 参数观察趋势。</div></div>`;
-  } else if (limitUp) {
-    archive = `<div class="archive">
-      <div class="archive-tag">${icon("activity", 11)} 今日涨停 · ${esc(tierName(limitUp.streak))}</div>
-      <div class="archive-name">${esc(limitUp.name)} <span style="font-family:var(--mono);font-size:8px;color:var(--faint)">${limitUp.code}</span></div>
+  if (!st) {
+    return `<div class="perf-grid">${Array.from({ length: 6 })
+      .map(() => `<div class="perf-item"><span class="sk" style="width:38px;height:8px"></span><span class="sk" style="width:62px;height:14px;margin-top:4px"></span></div>`)
+      .join("")}</div>`;
+  }
+  return `<div class="perf-grid">
+    <div class="perf-item"><span class="perf-label">252日高</span><span class="perf-value">${fmtPrice(st.hi)}</span></div>
+    <div class="perf-item"><span class="perf-label">252日低</span><span class="perf-value">${fmtPrice(st.lo)}</span></div>
+    <div class="perf-item"><span class="perf-label">区间涨幅</span><span class="perf-value text-${tone(st.yearReturn)}">${fmtPct(st.yearReturn)}</span></div>
+    <div class="perf-item"><span class="perf-label">近20日</span><span class="perf-value text-${tone(st.monthReturn)}">${fmtPct(st.monthReturn)}</span></div>
+    <div class="perf-item"><span class="perf-label">20日均额</span><span class="perf-value">${fmtAmount(st.avgAmount)}</span></div>
+    <div class="perf-item"><span class="perf-label">今日振幅</span><span class="perf-value">${st.amplitude.toFixed(2)}%</span></div>
+  </div>`;
+}
+
+function renderArchive(): string {
+  const sel = state.chartStock;
+  if (!sel) return "";
+  const limitUp = sel.kind === "stock" ? findStock(sel.code) : undefined;
+  const openStock = sel.kind === "stock" ? state.day?.openLimit.find((s) => s.code === sel.code) : undefined;
+  const downStock = sel.kind === "stock" ? state.day?.limitDown.find((s) => s.code === sel.code) : undefined;
+  if (sel.kind === "index") {
+    return `<div class="archive"><div class="archive-tag">${icon("activity", 12)} 指数行情</div><div class="archive-empty">指数 K线不提供涨停档案。<br />可切换周期与指标观察趋势。</div></div>`;
+  }
+  if (limitUp) {
+    return `<div class="archive">
+      <div class="archive-tag">${icon("activity", 12)} 今日涨停 · ${esc(tierName(limitUp.streak))}</div>
+      <div class="archive-name">${esc(limitUp.name)} <span>${limitUp.code}</span></div>
       <div class="archive-reason">${esc(limitUp.reason || "—")}</div>
       <div class="archive-rows">
         <div class="archive-row"><label>首次封板</label><span>${fmtClock(limitUp.firstSeal)}</span></div>
@@ -223,24 +295,25 @@ export function renderChartSide(): string {
         <div class="archive-row"><label>封板成功率</label><span>${limitUp.successRate.toFixed(0)}%</span></div>
       </div>
     </div>`;
-  } else if (openStock) {
-    archive = `<div class="archive">
-      <div class="archive-tag">${icon("activity", 11)} 今日炸板 · 开板 ${openStock.openNum} 次</div>
-      <div class="archive-name">${esc(openStock.name)} <span style="font-family:var(--mono);font-size:8px;color:var(--faint)">${openStock.code}</span></div>
+  }
+  if (openStock) {
+    return `<div class="archive">
+      <div class="archive-tag">${icon("activity", 12)} 今日炸板 · ${openStock.openNum > 0 ? `${openStock.openNum} 次开板` : "触板未封"}</div>
+      <div class="archive-name">${esc(openStock.name)} <span>${openStock.code}</span></div>
       <div class="archive-reason">盘中触及涨停后打开</div>
       <div class="archive-rows">
         <div class="archive-row"><label>首次触板</label><span>${fmtClock(openStock.firstSeal)}</span></div>
         <div class="archive-row"><label>末次封板</label><span>${fmtClock(openStock.lastSeal)}</span></div>
         <div class="archive-row"><label>收盘涨幅</label><span class="text-${tone(openStock.changeRate)}">${fmtPct(openStock.changeRate)}</span></div>
-        <div class="archive-row"><label>开板次数</label><span>${openStock.openNum} 次</span></div>
         <div class="archive-row"><label>换手率</label><span>${openStock.turnoverRate.toFixed(2)}%</span></div>
         <div class="archive-row"><label>流通市值</label><span>${fmtMoney(openStock.floatCap)}</span></div>
       </div>
     </div>`;
-  } else if (downStock) {
-    archive = `<div class="archive">
-      <div class="archive-tag">${icon("activity", 11)} 今日跌停</div>
-      <div class="archive-name">${esc(downStock.name)} <span style="font-family:var(--mono);font-size:8px;color:var(--faint)">${downStock.code}</span></div>
+  }
+  if (downStock) {
+    return `<div class="archive">
+      <div class="archive-tag">${icon("activity", 12)} 今日跌停</div>
+      <div class="archive-name">${esc(downStock.name)} <span>${downStock.code}</span></div>
       <div class="archive-reason">收盘封死跌停</div>
       <div class="archive-rows">
         <div class="archive-row"><label>收盘涨幅</label><span class="text-${tone(downStock.changeRate)}">${fmtPct(downStock.changeRate)}</span></div>
@@ -249,76 +322,93 @@ export function renderChartSide(): string {
         <div class="archive-row"><label>市场</label><span>${downStock.market === "GEM" ? "创业板" : downStock.market === "STAR" ? "科创板" : "主板"}</span></div>
       </div>
     </div>`;
-  } else if (stockSel) {
-    archive = `<div class="archive"><div class="archive-tag">${icon("info", 11)} 涨停档案</div><div class="archive-empty">${esc(code)} 今日未进入涨停、炸板或跌停池。<br />上方 K 线仍可查看价格与指标。</div></div>`;
   }
-
-  const perf = st
-    ? `<div class="perf-grid">
-        <div class="perf-item"><span class="perf-label">252日高</span><span class="perf-value">${fmtPrice(st.hi)}</span></div>
-        <div class="perf-item"><span class="perf-label">252日低</span><span class="perf-value">${fmtPrice(st.lo)}</span></div>
-        <div class="perf-item"><span class="perf-label">区间涨幅</span><span class="perf-value text-${tone(st.yearReturn)}">${fmtPct(st.yearReturn)}</span></div>
-        <div class="perf-item"><span class="perf-label">近20日</span><span class="perf-value text-${tone(st.monthReturn)}">${fmtPct(st.monthReturn)}</span></div>
-        <div class="perf-item"><span class="perf-label">20日均额</span><span class="perf-value">${fmtAmount(st.avgAmount)}</span></div>
-        <div class="perf-item"><span class="perf-label">今日振幅</span><span class="perf-value">${st.amplitude.toFixed(2)}%</span></div>
-      </div>`
-    : `<div class="perf-grid">${Array.from({ length: 6 })
-        .map(() => `<div class="perf-item"><span class="sk" style="width:38px;height:8px"></span><span class="sk" style="width:62px;height:14px;margin-top:4px"></span></div>`)
-        .join("")}</div>`;
-
-  return `<div class="side-head"><h3 class="side-title">区间</h3><span class="side-kicker">最近 250 个周期</span></div>
-    ${perf}
-    <div class="side-head" style="margin-top:22px"><h3 class="side-title">档案</h3><span class="side-kicker">当日盘口池</span></div>
-    ${archive}
-    <div class="indicator-note">
-      <b>MA</b> 简单移动平均 · <b>EMA</b> 指数移动平均 · <b>KDJ</b> 随机指标。<br />
-      进入「参数」可修改周期与 KDJ 系数。<br />
-      指标仅辅助观察，不构成投资建议。
-    </div>`;
+  return `<div class="archive"><div class="archive-tag">${icon("info", 12)} 盘口档案</div><div class="archive-empty">${esc(sel.code)} 今日未进入涨停、炸板或跌停池。<br />上方 K 线仍可查看价格与指标。</div></div>`;
 }
 
-export function renderWatchPanel(): string {
+export function renderChartInsight(): string {
+  return `<div class="insight-dock">
+    <div class="dock-section-head"><h3>区间</h3><span>最近 250 个周期</span></div>
+    ${renderPerf()}
+    <div class="dock-section-head" style="margin-top:26px"><h3>档案</h3><span>当日盘口池</span></div>
+    ${renderArchive()}
+  </div>`;
+}
+
+function watchQuote(code: string): { text: string; cls: string } | null {
+  const up = findStock(code);
+  if (up) return { text: fmtPct(up.changeRate), cls: `text-${tone(up.changeRate)}` };
+  const open = state.day?.openLimit.find((s) => s.code === code);
+  if (open) return { text: fmtPct(open.changeRate), cls: `text-${tone(open.changeRate)}` };
+  const down = state.day?.limitDown.find((s) => s.code === code);
+  if (down) return { text: fmtPct(down.changeRate), cls: `text-${tone(down.changeRate)}` };
+  return null;
+}
+
+export function renderWatchDock(): string {
   const groups = state.watchGroups;
   const active = groups.find((g) => g.id === state.watchGroupId) ?? groups[0];
   const stocks = active?.stocks ?? [];
-  const collapsed = state.watchCollapsed;
   const canAdd = state.chartStock?.kind === "stock";
-  return `<section class="watch-panel ${collapsed ? "is-collapsed" : ""}">
-    <div class="watch-head">
-      <div class="watch-title"><span class="watch-mark"></span><h3>自选</h3><span class="watch-count">${stocks.length} 只</span></div>
-      <div class="watch-groups">
-        ${groups
-          .map(
-            (g) => `<button class="watch-group ${g.id === active?.id ? "active" : ""}" data-watch-group="${g.id}">${esc(g.name)}<i>${g.stocks.length}</i></button>`,
-          )
-          .join("")}
-        <button class="watch-group-add" data-action="watch-create-group" title="新建分组">${icon("plus", 13)}</button>
-      </div>
-      <div class="watch-actions">
-        ${active ? `<button class="watch-mini" data-action="watch-rename" title="重命名分组">${icon("edit", 13)}</button><button class="watch-mini danger" data-action="watch-delete" title="删除分组">${icon("trash", 13)}</button>` : ""}
-        ${canAdd ? `<button class="watch-add-current" data-action="watch-add-current">${icon("plus", 12)} 加入当前</button>` : ""}
-        <button class="watch-mini" data-action="watch-toggle" title="${collapsed ? "展开自选" : "收起自选"}">${icon(collapsed ? "chevronDown" : "chevronUp", 13)}</button>
+  const rows = stocks
+    .map((s: WatchStock) => {
+      const quote = watchQuote(s.code);
+      return `<button class="watch-row" data-stock-code="${s.code}" data-stock-name="${esc(s.name)}" data-watch-code="${s.code}" data-watch-group="${active?.id}" title="查看 ${esc(s.name)} K线 · 右键分配到其他分组">
+        <span class="watch-row-main"><b>${esc(s.name)}</b><em>${s.code}</em></span>
+        <span class="watch-row-quote ${quote?.cls || "text-flat"}">${quote?.text || "—"}</span>
+        <span class="watch-row-market">${marketShort(s.code, s.market)}</span>
+        <span class="watch-row-go">${icon("arrowUpRight", 12)}</span>
+      </button>`;
+    })
+    .join("");
+
+  return `<div class="watch-dock">
+    <div class="watch-dock-head">
+      <div><h3>自选</h3><p>${stocks.length} 只 · ${active ? esc(active.name) : "未分组"}</p></div>
+      <div class="watch-dock-tools">
+        ${active ? `<button class="dock-icon" data-action="watch-rename" title="重命名分组">${icon("edit", 14)}</button><button class="dock-icon danger" data-action="watch-delete" title="删除分组">${icon("trash", 14)}</button>` : ""}
+        <button class="dock-icon accent" data-action="watch-create-group" title="新建分组">${icon("plus", 15)}</button>
       </div>
     </div>
-    ${
-      collapsed
-        ? ""
-        : `<div class="watch-body">
-          ${
-            !active
-              ? `<div class="watch-empty">还没有分组，先新建一个分组。</div>`
-              : !stocks.length
-                ? `<div class="watch-empty">「${esc(active.name)}」还是空的。${canAdd ? "点「加入当前」或到涨停池批量添加。" : "到涨停池批量添加。"}</div>`
-                : `<div class="watch-stocks">${stocks
-                    .map(
-                      (s) => `<button class="watch-stock" data-stock-code="${s.code}" data-stock-name="${esc(s.name)}" data-watch-code="${s.code}" data-watch-group="${active.id}" title="右键分配到其他分组">
-                        <span class="watch-stock-name">${esc(s.name)}</span>
-                        <span class="watch-stock-code">${s.code}</span>
-                      </button>`,
-                    )
-                    .join("")}</div>`
-          }
-        </div>`
-    }
-  </section>`;
+    <div class="watch-groups">
+      ${groups.map((g) => `<button class="watch-group ${g.id === active?.id ? "active" : ""}" data-watch-group="${g.id}">${esc(g.name)}<i>${g.stocks.length}</i></button>`).join("")}
+      ${groups.length ? "" : `<span class="watch-groups-empty">还没有分组</span>`}
+    </div>
+    ${canAdd ? `<button class="watch-add-row" data-action="watch-add-current">${icon("plus", 13)} 加入当前股票</button>` : ""}
+    <div class="watch-list">
+      ${
+        !active
+          ? `<div class="watch-empty"><b>先建一个分组</b><span>把常看的票放在一起，右键可以分配到其他分组。</span></div>`
+          : !stocks.length
+            ? `<div class="watch-empty"><b>这里还是空的</b><span>${canAdd ? "用上方按钮加入当前股票，或到涨停池批量添加。" : "到涨停池批量添加股票。"}</span></div>`
+            : rows
+      }
+    </div>
+    <div class="watch-dock-foot">
+      <span class="watch-foot-hint">同组去重 · 右键分配分组</span>
+    </div>
+  </div>`;
+}
+
+export function renderChartDock(): string {
+  const active = state.chartDock;
+  const watchCount = state.watchGroups.find((g) => g.id === state.watchGroupId)?.stocks.length ?? state.watchGroups[0]?.stocks.length ?? 0;
+  return `<aside class="chart-dock" id="chart-dock">
+    <div class="dock-tabs">
+      <button class="dock-tab ${active === "watch" ? "active" : ""}" data-dock-tab="watch"><span>自选</span><b>${watchCount}</b></button>
+      <button class="dock-tab ${active === "insight" ? "active" : ""}" data-dock-tab="insight"><span>档案</span></button>
+    </div>
+    <div class="dock-content" id="dock-content">${active === "insight" ? renderChartInsight() : renderWatchDock()}</div>
+  </aside>`;
+}
+
+export function updateChartDock(): void {
+  const old = document.getElementById("chart-dock");
+  if (!old) return;
+  const scroll = old.querySelector<HTMLElement>(".watch-list")?.scrollTop ?? 0;
+  const tmp = document.createElement("div");
+  tmp.innerHTML = renderChartDock();
+  old.replaceWith(tmp.firstElementChild!);
+  const list = document.querySelector<HTMLElement>("#chart-dock .watch-list");
+  if (list) list.scrollTop = scroll;
 }

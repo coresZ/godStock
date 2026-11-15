@@ -42,10 +42,18 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
     case "recent_stocks":
       return mockRecent as T;
     case "get_settings":
-      return { theme: (localStorage.getItem("tianti-theme") as "dark" | "light") || "dark" } as T;
+      return {
+        theme: (localStorage.getItem("tianti-theme") as "dark" | "light") || "dark",
+        uiScale: Number(localStorage.getItem("tianti-ui-scale") || "1.10"),
+      } as T;
     case "set_theme":
       localStorage.setItem("tianti-theme", String(args?.theme));
       return undefined as T;
+    case "set_ui_scale":
+      localStorage.setItem("tianti-ui-scale", String(args?.scale));
+      return Number(args?.scale || 1.10) as T;
+    case "export_text":
+      return `D:\\source\\godStock\\release\\data\\exports\\${String(args?.filename || "export.txt")}` as T;
     case "get_watch_groups":
       return [
         {
@@ -69,9 +77,19 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
     case "get_chart_prefs":
       return {
         maEnabled: false,
-        maPeriods: [5, 10, 20, 60],
+        maLines: [
+          { period: 5, color: "sky", width: 1, dashed: true },
+          { period: 10, color: "amber", width: 1, dashed: true },
+          { period: 20, color: "violet", width: 1, dashed: true },
+          { period: 60, color: "brass", width: 1, dashed: true },
+        ],
         emaEnabled: true,
-        emaPeriods: [5, 10, 20, 60],
+        emaLines: [
+          { period: 5, color: "brass", width: 1.2, dashed: false },
+          { period: 10, color: "up", width: 1.2, dashed: false },
+          { period: 20, color: "down", width: 1.2, dashed: false },
+          { period: 60, color: "violet", width: 1.2, dashed: false },
+        ],
         kdjEnabled: true,
         kdjN: 9,
         kdjK: 3,
