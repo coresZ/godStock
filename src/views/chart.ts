@@ -1,5 +1,5 @@
 import { esc, fmtAmount, fmtClock, fmtMoney, fmtPct, fmtPrice, fmtShortDate, icon, tierName, tone } from "../lib/ui";
-import { findStock, state } from "../lib/state";
+import { filterStocks, findStock, state } from "../lib/state";
 import type { ChartPrefs, KlineCandle } from "../lib/types";
 
 const PERIODS: Array<{ value: import("../lib/types").Period; label: string }> = [
@@ -97,10 +97,32 @@ export function renderChartView(): string {
   </section>`;
 }
 
+export function chartSwitchContext(): { list: Array<{ code: string; name: string; market: string }>; index: number } {
+  const current = state.chartStock;
+  if (!current || current.kind !== "stock") return { list: [], index: -1 };
+  let list = filterStocks().map((s) => ({ code: s.code, name: s.name, market: s.market }));
+  if (!list.some((s) => s.code === current.code)) {
+    const group = state.watchGroups.find((g) => g.id === state.watchGroupId) ?? state.watchGroups[0];
+    const groupList = group?.stocks ?? [];
+    if (groupList.some((s) => s.code === current.code)) list = groupList.slice();
+  }
+  if (!list.some((s) => s.code === current.code)) {
+    const seen = new Set<string>();
+    list = [];
+    for (const s of [...(state.day?.stocks ?? []), ...(state.day?.openLimit ?? []), ...(state.day?.limitDown ?? [])]) {
+      if (seen.has(s.code)) continue;
+      seen.add(s.code);
+      list.push({ code: s.code, name: s.name, market: s.market });
+    }
+  }
+  return { list, index: list.findIndex((s) => s.code === current.code) };
+}
+
 export function renderChartHead(): string {
   const stock = state.chartStock;
   if (!stock) return "";
   const data = state.chartData;
+  const switcher = chartSwitchContext();
   const candles = data?.candles ?? [];
   const st = stats(candles);
   const last = st?.last;
@@ -151,6 +173,11 @@ export function renderChartHead(): string {
     ${identity}
     ${quote}
     <div class="chart-head-spacer"></div>
+    ${stock.kind === "stock" ? `<div class="chart-switch" title="在当前列表 / 自选分组中直接切换">
+      <button data-action="chart-prev" aria-label="上一只" ${switcher.list.length < 2 ? "disabled" : ""}>${icon("chevronLeft", 13)}</button>
+      <span>${switcher.index >= 0 ? switcher.index + 1 : "—"}<i>/</i>${switcher.list.length || "—"}</span>
+      <button data-action="chart-next" aria-label="下一只" ${switcher.list.length < 2 ? "disabled" : ""}>${icon("chevronRight", 13)}</button>
+    </div>` : ""}
     ${stock.kind === "stock" ? `<button class="chart-watch-add" data-action="watch-add-current">${icon("wallet", 13)} 加自选</button>` : ""}
     ${snapshots}`;
 }

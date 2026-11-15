@@ -4,7 +4,7 @@ import { availableDates, filterStocks, neighbors, parseHash, state } from "./lib
 import type { ChartPrefs, ChartSelection, Period, SearchItem, Theme, WatchStock } from "./lib/types";
 import { esc, fmtBytes, fmtShortDate, icon, relTime, weekdayFromYmd } from "./lib/ui";
 import { KLineChart } from "./chart";
-import { indicatorSummary, renderChartToolbar, renderChartView, renderWatchPanel } from "./views/chart";
+import { chartSwitchContext, indicatorSummary, renderChartToolbar, renderChartView, renderWatchPanel } from "./views/chart";
 import { renderIndices, renderRail, renderTitlebar, syncLabel } from "./views/common";
 import { renderLadder } from "./views/ladder";
 import { renderPool, updatePoolStage, updatePoolTable } from "./views/pool";
@@ -323,7 +323,7 @@ function navigate(view: "ladder" | "pool" | "timeline" | "chart"): void {
   updateChrome();
 }
 
-function openChart(code: string, name: string, market = ""): void {
+function openChart(code: string, name: string, market = "", animate = true): void {
   if (!code) return;
   if (state.view !== "chart") state.returnView = state.view;
   state.chartStock = { code, name, market, kind: "stock" };
@@ -332,7 +332,7 @@ function openChart(code: string, name: string, market = ""): void {
   state.chartError = null;
   state.chartLoading = true;
   syncHash();
-  renderMain();
+  renderMain({ animate });
   void loadChart();
 }
 
@@ -347,6 +347,13 @@ function openIndexChart(secid: string, name: string): void {
   syncHash();
   renderMain();
   void loadChart();
+}
+
+function stepChart(delta: number): void {
+  const ctx = chartSwitchContext();
+  if (ctx.list.length < 2 || ctx.index < 0) return;
+  const next = ctx.list[(ctx.index + delta + ctx.list.length) % ctx.list.length];
+  if (next && next.code !== state.chartStock?.code) openChart(next.code, next.name, next.market, false);
 }
 
 function chartBack(): void {
@@ -691,6 +698,12 @@ function handleClick(e: MouseEvent): void {
       break;
     case "chart-back":
       chartBack();
+      break;
+    case "chart-prev":
+      stepChart(-1);
+      break;
+    case "chart-next":
+      stepChart(1);
       break;
     case "chart-retry":
       if (state.chartStock) void loadChart();

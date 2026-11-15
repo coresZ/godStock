@@ -2309,6 +2309,40 @@ select.select option { background: var(--surface); color: var(--text); }
 /* chart body + watch list */
 .chart-body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
 .chart-body .chart-layout { flex: 1 1 auto; }
+.chart-switch {
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  margin-right: 8px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--faint);
+  overflow: hidden;
+}
+.chart-switch button {
+  width: 25px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  color: var(--faint);
+  transition: color .15s, background .15s;
+}
+.chart-switch button:hover:not(:disabled) { color: var(--brass); background: var(--brass-soft); }
+.chart-switch button:disabled { opacity: .28; cursor: default; }
+.chart-switch button .icon { width: 12px; height: 12px; }
+.chart-switch > span {
+  min-width: 42px;
+  padding: 0 2px;
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 8px;
+  color: var(--muted);
+  border-left: 1px solid var(--line);
+  border-right: 1px solid var(--line);
+  line-height: 26px;
+}
+.chart-switch > span i { font-style: normal; color: var(--faint); margin: 0 1px; font-size: 7px; }
 .chart-watch-add {
   align-self: center;
   display: inline-flex;
