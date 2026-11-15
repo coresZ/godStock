@@ -1,0 +1,109 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to publish, for example v1.2.1"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  windows-portable:
+    name: Build Windows portable release
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      CARGO_TERM_COLOR: always
+      CI: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.22.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          cache-on-failure: true
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Type check and build frontend
+        run: pnpm build
+
+      - name: Build portable exe
+        run: cargo build --release --manifest-path src-tauri/Cargo.toml --features custom-protocol
+
+      - name: Package release and checksums
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $tag = "${{ inputs.tag || github.ref_name }}"
+          $version = $tag.TrimStart("v")
+          if ([string]::IsNullOrWhiteSpace($version)) { throw "Tag name is empty" }
+
+          $package = "release-package"
+          New-Item -ItemType Directory -Force -Path $package | Out-Null
+          Copy-Item "src-tauri/target/release/tianti.exe" "$package/TianTi.exe" -Force
+          Copy-Item "README.md" "$package/README.md" -Force
+          Copy-Item "release/使用说明.txt" "$package/使用说明.txt" -Force
+
+          $zipName = "TianTi-v$version-win-x64.zip"
+          $zipPath = Join-Path $package $zipName
+          Compress-Archive -Path (Join-Path $package "*") -DestinationPath $zipPath -CompressionLevel Optimal -Force
+
+          $exeHash = (Get-FileHash "$package/TianTi.exe" -Algorithm SHA256).Hash.ToUpper()
+          $zipHash = (Get-FileHash $zipPath -Algorithm SHA256).Hash.ToUpper()
+          $utf8 = New-Object System.Text.UTF8Encoding($false)
+          $sums = "$exeHash  TianTi.exe`r`n$zipHash  $zipName`r`n"
+          [IO.File]::WriteAllText((Join-Path $package "SHA256SUMS.txt"), $sums, $utf8)
+          [IO.File]::WriteAllText((Join-Path $package "$zipName.sha256"), "$zipHash  $zipName`r`n", $utf8)
+
+          Write-Host "TianTi.exe $exeHash"
+          Write-Host "$zipName $zipHash"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          name: "天梯 ${{ inputs.tag || github.ref_name }}"
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: true
+          files: |
+            release-package/TianTi.exe
+            release-package/TianTi-*-win-x64.zip
+            release-package/SHA256SUMS.txt
+            release-package/TianTi-*-win-x64.zip.sha256
