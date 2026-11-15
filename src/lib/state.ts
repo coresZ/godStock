@@ -41,6 +41,7 @@ export interface AppState {
   returnView: Exclude<ViewName, "chart"> | "chart";
   chartStock: ChartSelection | null;
   chartPeriod: Period;
+  chartMode: "kline" | "timeshare";
   chartData: KlinePayload | null;
   chartLoading: boolean;
   chartError: string | null;
@@ -76,6 +77,7 @@ export const state: AppState = {
   returnView: "ladder",
   chartStock: null,
   chartPeriod: "day",
+  chartMode: "kline",
   chartData: null,
   chartLoading: false,
   chartError: null,
@@ -83,17 +85,17 @@ export const state: AppState = {
   chartPrefs: {
     maEnabled: false,
     maLines: [
-      { period: 5, color: "sky", width: 1, dashed: true },
-      { period: 10, color: "amber", width: 1, dashed: true },
-      { period: 20, color: "violet", width: 1, dashed: true },
-      { period: 60, color: "brass", width: 1, dashed: true },
+      { period: 5, color: "sky", width: 1, dashed: true, visible: true },
+      { period: 10, color: "amber", width: 1, dashed: true, visible: true },
+      { period: 20, color: "violet", width: 1, dashed: true, visible: true },
+      { period: 60, color: "brass", width: 1, dashed: true, visible: true },
     ],
     emaEnabled: true,
     emaLines: [
-      { period: 5, color: "brass", width: 1.2, dashed: false },
-      { period: 10, color: "up", width: 1.2, dashed: false },
-      { period: 20, color: "down", width: 1.2, dashed: false },
-      { period: 60, color: "violet", width: 1.2, dashed: false },
+      { period: 5, color: "brass", width: 1.2, dashed: false, visible: true },
+      { period: 10, color: "up", width: 1.2, dashed: false, visible: true },
+      { period: 20, color: "down", width: 1.2, dashed: false, visible: true },
+      { period: 60, color: "violet", width: 1.2, dashed: false, visible: true },
     ],
     kdjEnabled: true,
     kdjN: 9,

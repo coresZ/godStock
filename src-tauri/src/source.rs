@@ -515,6 +515,10 @@ fn parse_kline_json(data: &Value) -> Result<(String, Vec<KlineCandle>)> {
     Ok((name, candles))
 }
 
+pub async fn fetch_prev_close_for_stock(client: &Client, code: &str) -> Option<f64> {
+    fetch_prev_close(client, &secid(code)).await
+}
+
 pub async fn fetch_kline(client: &Client, code: &str, period: &str) -> Result<(String, Vec<KlineCandle>)> {
     let sid = secid(code);
     let klt = period_klt(period);
@@ -524,6 +528,15 @@ pub async fn fetch_kline(client: &Client, code: &str, period: &str) -> Result<(S
     );
     let json = get_json(client, &url, EM_REFERER).await?;
     parse_kline_json(&json["data"])
+}
+
+pub async fn fetch_prev_close(client: &Client, sid: &str) -> Option<f64> {
+    let url = format!(
+        "https://push2.eastmoney.com/api/qt/stock/get?fltt=2&secid={sid}&fields=f57,f58,f43,f60"
+    );
+    let json = get_json(client, &url, EM_REFERER).await.ok()?;
+    let value = num(&json["data"]["f60"]);
+    if value > 0.0 { Some(value) } else { None }
 }
 
 pub async fn fetch_index_kline(client: &Client, sid: &str, period: &str) -> Result<(String, Vec<KlineCandle>)> {

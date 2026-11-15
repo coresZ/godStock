@@ -107,6 +107,8 @@ pub struct KlinePayload {
     pub period: String,
     pub candles: Vec<KlineCandle>,
     pub latest_date: String,
+    #[serde(default)]
+    pub prev_close: Option<f64>,
     pub source: String,
     pub warning: Option<String>,
 }
@@ -168,6 +170,12 @@ pub struct IndicatorLine {
     pub color: String,
     pub width: f64,
     pub dashed: bool,
+    #[serde(default = "default_true")]
+    pub visible: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -192,6 +200,7 @@ fn default_lines(periods: [i64; 4], colors: [&str; 4], width: f64, dashed: bool)
             color: color.into(),
             width,
             dashed,
+            visible: true,
         })
         .collect()
 }

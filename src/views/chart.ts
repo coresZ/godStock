@@ -73,6 +73,46 @@ function marketShort(code: string, market = ""): string {
   return "深";
 }
 
+interface IntradaySnapshot {
+  rows: KlineCandle[];
+  base: number;
+  pct: number;
+  change: number;
+  high: number;
+  low: number;
+  amount: number;
+  turnover: number;
+  avg: number;
+}
+
+function intradaySnapshot(candles: KlineCandle[], prevClose?: number | null): IntradaySnapshot | null {
+  const last = candles[candles.length - 1];
+  if (!last || !last.date.includes(" ")) return null;
+  const day = last.date.slice(0, 10);
+  const start = candles.findIndex((c) => c.date.startsWith(day));
+  const rows = candles.slice(Math.max(0, start));
+  const first = rows[0];
+  if (!first) return null;
+  const base = prevClose && prevClose > 0 ? prevClose : start > 0 ? candles[start - 1].close : first.open || first.close;
+  const high = Math.max(...rows.map((r) => r.high));
+  const low = Math.min(...rows.map((r) => r.low));
+  const amount = rows.reduce((sum, r) => sum + r.amount, 0);
+  const turnover = rows.reduce((sum, r) => sum + r.turnover, 0);
+  const volume = rows.reduce((sum, r) => sum + r.volume, 0);
+  const avg = volume > 0 ? amount / (volume * 100) : last.close;
+  return {
+    rows,
+    base,
+    pct: base > 0 ? ((last.close - base) / base) * 100 : 0,
+    change: last.close - base,
+    high,
+    low,
+    amount,
+    turnover,
+    avg,
+  };
+}
+
 function stats(candles: KlineCandle[]) {
   if (!candles.length) return null;
   const last = candles[candles.length - 1];
@@ -92,8 +132,10 @@ function stats(candles: KlineCandle[]) {
 
 export function indicatorSummary(prefs: ChartPrefs): string {
   const parts: string[] = [];
-  if (prefs.maEnabled) parts.push(`MA ${prefs.maLines.map((l) => l.period).join(" / ")}`);
-  if (prefs.emaEnabled) parts.push(`EMA ${prefs.emaLines.map((l) => l.period).join(" / ")}`);
+  const maVisible = prefs.maLines.filter((l) => l.visible !== false);
+  const emaVisible = prefs.emaLines.filter((l) => l.visible !== false);
+  if (prefs.maEnabled && maVisible.length) parts.push(`MA ${maVisible.map((l) => l.period).join(" / ")}`);
+  if (prefs.emaEnabled && emaVisible.length) parts.push(`EMA ${emaVisible.map((l) => l.period).join(" / ")}`);
   if (prefs.kdjEnabled) parts.push(`KDJ (${prefs.kdjN}, ${prefs.kdjK}, ${prefs.kdjD})`);
   return parts.join(" · ") || "未启用指标";
 }
@@ -121,10 +163,10 @@ export function renderChartView(): string {
           <div class="chart-toolbar" id="chart-toolbar">${renderChartToolbar()}</div>
           <div class="chart-stage-shell">
             <div class="chart-stage" id="chart-stage"></div>
-            ${state.chartLoading ? `<div class="chart-loading"><span class="loader"></span><span>正在刷新 ${esc(PERIOD_LABEL[state.chartPeriod] || "K线")}</span></div>` : ""}
+            ${state.chartLoading ? `<div class="chart-loading"><span class="loader"></span><span>正在刷新 ${state.chartMode === "timeshare" ? "分时" : esc(PERIOD_LABEL[state.chartPeriod] || "K线")}</span></div>` : ""}
             ${state.chartError ? `<div class="chart-error"><div class="error-title">K线没有加载</div><span>${esc(state.chartError)}</span><button class="chart-retry" data-action="chart-retry">重新加载</button></div>` : ""}
           </div>
-          <div class="chart-footnote"><span>东方财富 · 前复权${stock.kind === "index" ? " · 指数" : ""}</span><span>${esc(indicatorSummary(state.chartPrefs))}</span></div>
+          <div class="chart-footnote"><span>东方财富 · ${state.chartMode === "timeshare" ? "分时" : "前复权"}${stock.kind === "index" ? " · 指数" : ""}</span><span>${state.chartMode === "timeshare" ? "价格 · 日内均价" : esc(indicatorSummary(state.chartPrefs))}</span></div>
         </div>
         ${renderChartDock()}
       </div>
@@ -158,12 +200,17 @@ export function renderChartHead(): string {
   if (!stock) return "";
   const data = state.chartData;
   const candles = data?.candles ?? [];
+  const intraday = intradaySnapshot(candles, data?.prevClose);
   const st = stats(candles);
   const last = st?.last;
   const name = data?.name || stock.name || stock.code;
   const code = stock.kind === "index" ? stock.secid || stock.code : data?.code || stock.code;
-  const pct = last?.pct ?? 0;
-  const change = last && st ? last.close - st.prev.close : 0;
+  const pct = intraday?.pct ?? last?.pct ?? 0;
+  const change = intraday?.change ?? (last && st ? last.close - st.prev.close : 0);
+  const dayHigh = intraday?.high ?? last?.high ?? 0;
+  const dayLow = intraday?.low ?? last?.low ?? 0;
+  const dayAmount = intraday?.amount ?? last?.amount ?? 0;
+  const dayTurnover = intraday?.turnover ?? last?.turnover ?? 0;
   let dateLabel = "—";
   if (data?.latestDate) {
     if (data.latestDate.includes(" ")) {
@@ -186,10 +233,10 @@ export function renderChartHead(): string {
 
   const snapshots = last
     ? `<div class="chart-snapshot">
-        <div class="snapshot-item"><span class="snapshot-label">最高</span><span class="snapshot-value">${fmtPrice(last.high)}</span></div>
-        <div class="snapshot-item"><span class="snapshot-label">最低</span><span class="snapshot-value">${fmtPrice(last.low)}</span></div>
-        <div class="snapshot-item"><span class="snapshot-label">成交额</span><span class="snapshot-value">${fmtAmount(last.amount)}</span></div>
-        <div class="snapshot-item"><span class="snapshot-label">换手</span><span class="snapshot-value">${last.turnover.toFixed(2)}%</span></div>
+        <div class="snapshot-item"><span class="snapshot-label">最高</span><span class="snapshot-value">${fmtPrice(dayHigh)}</span></div>
+        <div class="snapshot-item"><span class="snapshot-label">最低</span><span class="snapshot-value">${fmtPrice(dayLow)}</span></div>
+        <div class="snapshot-item"><span class="snapshot-label">成交额</span><span class="snapshot-value">${fmtAmount(dayAmount)}</span></div>
+        <div class="snapshot-item"><span class="snapshot-label">${intraday ? "均价" : "换手"}</span><span class="snapshot-value">${intraday ? fmtPrice(intraday.avg) : `${dayTurnover.toFixed(2)}%`}</span></div>
       </div>`
     : "";
 
@@ -201,8 +248,8 @@ export function renderChartHead(): string {
         <span class="chart-market">${marketName(stock.code, stock.kind)}</span>
       </div>
       <div class="chart-meta">
-        <span>${PERIOD_LABEL[state.chartPeriod]}</span><span class="meta-dot"></span>
-        <span>${stock.kind === "index" ? "指数" : "前复权"}</span><span class="meta-dot"></span>
+        <span>${state.chartMode === "timeshare" ? "分时" : PERIOD_LABEL[state.chartPeriod]}</span><span class="meta-dot"></span>
+        <span>${stock.kind === "index" ? "指数" : state.chartMode === "timeshare" ? "日内均价" : "前复权"}</span><span class="meta-dot"></span>
         <span>截至 ${dateLabel}</span>
         ${data?.source === "cache" ? `<span class="meta-dot"></span><span class="cache-tag">本地缓存</span>` : ""}
       </div>
@@ -217,17 +264,18 @@ export function renderChartToolbar(): string {
   const moreActive = MORE_PERIODS.find((p) => p.value === state.chartPeriod);
   const ranges = rangeOptions(state.chartPeriod);
   return `<div class="seg chart-periods" role="group" aria-label="K线周期">
-      ${PRIMARY_PERIODS.map((p) => `<button class="${state.chartPeriod === p.value ? "active" : ""}" data-chart-period="${p.value}">${p.label}</button>`).join("")}
+      <button class="${state.chartMode === "timeshare" ? "active" : ""}" data-chart-mode="timeshare">分时</button>
+      ${PRIMARY_PERIODS.map((p) => `<button class="${state.chartMode === "kline" && state.chartPeriod === p.value ? "active" : ""}" data-chart-period="${p.value}">${p.label}</button>`).join("")}
     </div>
     <div class="period-more" id="period-more">
-      <button class="period-more-btn ${moreActive ? "active" : ""}" data-action="period-menu" aria-haspopup="true">
-        <span>${moreActive ? moreActive.label : "更多"}</span>${icon("chevronDown", 12)}
+      <button class="period-more-btn ${moreActive && state.chartMode === "kline" ? "active" : ""}" data-action="period-menu" aria-haspopup="true">
+        <span>${moreActive && state.chartMode === "kline" ? moreActive.label : "更多"}</span>${icon("chevronDown", 12)}
       </button>
       <div class="period-menu" role="menu">
-        ${MORE_PERIODS.map((p) => `<button class="${state.chartPeriod === p.value ? "active" : ""}" data-chart-period="${p.value}">${p.label}${state.chartPeriod === p.value ? icon("check", 12) : ""}</button>`).join("")}
+        ${MORE_PERIODS.map((p) => `<button class="${state.chartMode === "kline" && state.chartPeriod === p.value ? "active" : ""}" data-chart-period="${p.value}">${p.label}${state.chartMode === "kline" && state.chartPeriod === p.value ? icon("check", 12) : ""}</button>`).join("")}
       </div>
     </div>
-    <div class="seg chart-ranges" role="group" aria-label="显示区间">
+    ${state.chartMode === "kline" ? `<div class="seg chart-ranges" role="group" aria-label="显示区间">
       ${ranges.map((r) => `<button class="${state.chartRange === r.value ? "active" : ""}" data-chart-range="${r.value}">${r.label}</button>`).join("")}
     </div>
     <span class="toolbar-divider"></span>
@@ -238,7 +286,7 @@ export function renderChartToolbar(): string {
       <button class="chip ${prefs.kdjEnabled ? "active" : ""}" data-indicator="kdj" aria-pressed="${prefs.kdjEnabled}">KDJ</button>
     </div>
     <button class="chart-settings-btn" data-action="indicator-settings" title="MA / EMA 颜色、粗细、虚实；KDJ 系数">${icon("sliders", 14)}<span>参数</span></button>
-    <button class="chart-info" aria-label="指标说明">${icon("info", 13)}<span class="info-pop"><b>MA</b> 简单移动平均 · <b>EMA</b> 指数移动平均 · <b>KDJ</b> 随机指标。颜色、粗细、虚实可在「参数」里修改。指标仅辅助观察，不构成投资建议。</span></button>
+    <button class="chart-info" aria-label="指标说明">${icon("info", 13)}<span class="info-pop"><b>MA</b> 简单移动平均 · <b>EMA</b> 指数移动平均 · <b>KDJ</b> 随机指标。颜色、粗细、虚实可在「参数」里修改。指标仅辅助观察，不构成投资建议。</span></button>` : `<span class="chart-timeshare-chip">日内走势 · 均价线</span>`}
     <div class="chart-toolbar-spacer"></div>
     <div class="chart-toolbar-actions">
       ${state.chartStock?.kind === "stock" ? renderChartSwitchAction() : ""}
@@ -248,6 +296,7 @@ export function renderChartToolbar(): string {
 
 function renderChartSwitchAction(): string {
   const switcher = chartSwitchContext();
+  if (switcher.index < 0) return "";
   return `<div class="chart-switch" title="在当前列表 / 自选分组中直接切换">
     <button data-action="chart-prev" aria-label="上一只" ${switcher.list.length < 2 ? "disabled" : ""}>${icon("chevronLeft", 13)}</button>
     <span>${switcher.index >= 0 ? switcher.index + 1 : "—"}<i>/</i>${switcher.list.length || "—"}</span>
@@ -256,7 +305,20 @@ function renderChartSwitchAction(): string {
 }
 
 function renderPerf(): string {
-  const st = stats(state.chartData?.candles ?? []);
+  const candles = state.chartData?.candles ?? [];
+  const intraday = ["1m", "15m", "30m", "60m"].includes(state.chartPeriod) ? intradaySnapshot(candles, state.chartData?.prevClose) : null;
+  if (intraday) {
+    const amplitude = intraday.base > 0 ? ((intraday.high - intraday.low) / intraday.base) * 100 : 0;
+    return `<div class="perf-grid">
+      <div class="perf-item"><span class="perf-label">日内高</span><span class="perf-value">${fmtPrice(intraday.high)}</span></div>
+      <div class="perf-item"><span class="perf-label">日内低</span><span class="perf-value">${fmtPrice(intraday.low)}</span></div>
+      <div class="perf-item"><span class="perf-label">日内涨幅</span><span class="perf-value text-${tone(intraday.pct)}">${fmtPct(intraday.pct)}</span></div>
+      <div class="perf-item"><span class="perf-label">振幅</span><span class="perf-value">${amplitude.toFixed(2)}%</span></div>
+      <div class="perf-item"><span class="perf-label">成交额</span><span class="perf-value">${fmtAmount(intraday.amount)}</span></div>
+      <div class="perf-item"><span class="perf-label">均价</span><span class="perf-value">${fmtPrice(intraday.avg)}</span></div>
+    </div>`;
+  }
+  const st = stats(candles);
   if (!st) {
     return `<div class="perf-grid">${Array.from({ length: 6 })
       .map(() => `<div class="perf-item"><span class="sk" style="width:38px;height:8px"></span><span class="sk" style="width:62px;height:14px;margin-top:4px"></span></div>`)
@@ -327,8 +389,9 @@ function renderArchive(): string {
 }
 
 export function renderChartInsight(): string {
+  const intraday = ["1m", "15m", "30m", "60m"].includes(state.chartPeriod);
   return `<div class="insight-dock">
-    <div class="dock-section-head"><h3>区间</h3><span>最近 250 个周期</span></div>
+    <div class="dock-section-head"><h3>${intraday ? "日内" : "区间"}</h3><span>${intraday ? "09:30 – 15:00" : "最近 250 个周期"}</span></div>
     ${renderPerf()}
     <div class="dock-section-head" style="margin-top:26px"><h3>档案</h3><span>当日盘口池</span></div>
     ${renderArchive()}

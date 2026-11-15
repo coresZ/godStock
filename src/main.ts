@@ -1,9 +1,11 @@
 import "./styles.css";
 import { api } from "./lib/api";
+import { closeDropdown, initDropdowns } from "./lib/dropdown";
 import { availableDates, filterStocks, findStock, neighbors, parseHash, state } from "./lib/state";
 import type { ChartPrefs, ChartSelection, Period, SearchItem, Theme, WatchStock } from "./lib/types";
 import { esc, fmtBytes, fmtClock, fmtMoney, fmtShortDate, icon, relTime, tierName, weekdayFromYmd } from "./lib/ui";
 import { KLineChart } from "./chart";
+import { TimeShareChart } from "./timeshare";
 import { chartSwitchContext, indicatorSummary, normalizeChartRange, renderChartDock, renderChartToolbar, renderChartView, updateChartDock } from "./views/chart";
 import { renderIndices, renderRail, renderTitlebar, syncLabel } from "./views/common";
 import { renderLadder } from "./views/ladder";
@@ -11,6 +13,7 @@ import { renderPool, updatePoolStage, updatePoolTable } from "./views/pool";
 import { renderTimeline, timelineExportText } from "./views/timeline";
 
 let chart: KLineChart | null = null;
+let timeShareChart: TimeShareChart | null = null;
 let dayToken = 0;
 let chartToken = 0;
 let overlayKind:
@@ -81,6 +84,14 @@ async function start(): Promise<void> {
     state.chartLoading = true;
   }
 
+  initDropdowns();
+  document.addEventListener("dd-change", (event) => {
+    const trigger = event.target as HTMLElement;
+    if (trigger.dataset.ddKind !== "sector") return;
+    state.poolKind = "limitUp";
+    state.poolSector = trigger.dataset.value || "";
+    updatePoolStage();
+  });
   renderShell();
   bindGlobals();
   booted = true;
@@ -129,6 +140,7 @@ function applyTheme(theme: Theme, persist = true): void {
       chart.redraw();
       chart.setConfig(state.chartPrefs);
     }
+    timeShareChart?.redraw();
   }
 }
 
@@ -432,6 +444,7 @@ async function refreshChart(token: number): Promise<void> {
 }
 
 function renderMain(opts: { animate?: boolean } = {}): void {
+  closeDropdown();
   const main = document.getElementById("main");
   if (!main) return;
   const scrolls = {
@@ -441,6 +454,8 @@ function renderMain(opts: { animate?: boolean } = {}): void {
   };
   chart?.destroy();
   chart = null;
+  timeShareChart?.destroy();
+  timeShareChart = null;
   let html = "";
   if (state.view === "pool") html = renderPool();
   else if (state.view === "timeline") html = renderTimeline();
@@ -461,6 +476,12 @@ function renderMain(opts: { animate?: boolean } = {}): void {
 function mountChart(): void {
   const stage = document.getElementById("chart-stage");
   if (!stage || !state.chartData) return;
+  if (state.chartMode === "timeshare") {
+    if (state.chartPeriod !== "1m" || state.chartData.period !== "1m") return;
+    timeShareChart = new TimeShareChart(stage);
+    timeShareChart.setData(state.chartData.candles, state.chartData.prevClose);
+    return;
+  }
   chart = new KLineChart(stage, {
     period: state.chartPeriod,
     range: state.chartRange,
@@ -538,11 +559,7 @@ function handleInput(e: Event): void {
 
 function handleChange(e: Event): void {
   const target = e.target as HTMLSelectElement;
-  if (target.matches("[data-pool-sector]")) {
-    state.poolSector = target.value;
-    state.poolKind = "limitUp";
-    updatePoolStage();
-  }
+
 }
 
 function hideHover(): void {
@@ -628,10 +645,29 @@ function handleClick(e: MouseEvent): void {
     openIndexChart(indexEl.dataset.indexSecid!, indexEl.dataset.indexName || "指数");
     return;
   }
+  const modeBtn = target.closest<HTMLElement>('[data-chart-mode="timeshare"]');
+  if (modeBtn) {
+    const needData = state.chartPeriod !== "1m" || state.chartData?.period !== "1m";
+    state.chartMode = "timeshare";
+    if (state.chartPeriod !== "1m") {
+      state.chartPeriod = "1m";
+      state.chartRange = 0;
+    }
+    state.chartLoading = needData;
+    renderMain({ animate: false });
+    if (needData) void loadChart();
+    return;
+  }
   const periodBtn = target.closest<HTMLElement>("[data-chart-period]");
   if (periodBtn) {
     const p = periodBtn.dataset.chartPeriod as Period;
-    if (p !== state.chartPeriod) {
+    const wasTimeshare = state.chartMode === "timeshare";
+    state.chartMode = "kline";
+    if (p === state.chartPeriod && state.chartData?.period === p) {
+      renderMain({ animate: false });
+      return;
+    }
+    if (p !== state.chartPeriod || wasTimeshare) {
       const wasIntradayMinute = state.chartPeriod === "1m";
       state.chartPeriod = p;
       state.chartRange = p === "1m" && !wasIntradayMinute && state.chartRange !== 0 ? 240 : normalizeChartRange(p, state.chartRange);
@@ -874,8 +910,10 @@ async function loadChartPrefs(): Promise<void> {
     const tb = document.getElementById("chart-toolbar");
     if (tb) tb.innerHTML = renderChartToolbar();
     chart?.setConfig(state.chartPrefs);
-    const note = document.querySelector<HTMLElement>(".chart-footnote span:last-child");
-    if (note) note.textContent = indicatorSummary(state.chartPrefs);
+    if (state.chartMode !== "timeshare") {
+      const note = document.querySelector<HTMLElement>(".chart-footnote span:last-child");
+      if (note) note.textContent = indicatorSummary(state.chartPrefs);
+    }
   }
 }
 
@@ -1085,23 +1123,61 @@ const LINE_COLORS: Array<{ value: string; label: string; css: string }> = [
   { value: "amber", label: "琥珀", css: "var(--amber)" },
 ];
 
+const LINE_WIDTHS = [0.8, 1, 1.2, 1.5, 2, 2.5];
+const LINE_PERIODS = [5, 13, 21, 34, 55, 89, 144, 233, 2, 3, 8];
+
+function colorDot(color: string): string {
+  const css = LINE_COLORS.find((c) => c.value === color)?.css || "var(--brass)";
+  return `<i class="dd-dot" style="background:${css}"></i>`;
+}
+
+function lineDd(field: "color" | "width" | "dashed", line: ChartPrefs["maLines"][number]): string {
+  let label = "";
+  let options = "";
+  if (field === "color") {
+    const current = LINE_COLORS.find((c) => c.value === line.color) || LINE_COLORS[0];
+    label = `${colorDot(current.value)}${current.label}`;
+    options = LINE_COLORS.map((c) => `<button type="button" data-value="${c.value}">${colorDot(c.value)}${c.label}</button>`).join("");
+  } else if (field === "width") {
+    label = `${line.width}px`;
+    options = LINE_WIDTHS.map((w) => `<button type="button" data-value="${w}">${w}px</button>`).join("");
+  } else {
+    label = line.dashed ? "虚线" : "实线";
+    options = `<button type="button" data-value="0">实线</button><button type="button" data-value="1">虚线</button>`;
+  }
+  const value = field === "color" ? line.color : field === "width" ? line.width : line.dashed ? "1" : "0";
+  return `<div class="dd line-dd">
+    <button type="button" class="dd-trigger line-dd-trigger" data-dd-trigger data-dd-menu="${field === "color" ? 164 : 82}" data-field="${field}" data-value="${value}" aria-haspopup="listbox" aria-expanded="false">
+      <span class="dd-label">${label}</span>${icon("chevronDown", 10)}
+    </button>
+    <div class="dd-options" hidden>${options}</div>
+  </div>`;
+}
+
+function lineRow(kind: "ma" | "ema", line: ChartPrefs["maLines"][number]): string {
+  const visible = line.visible !== false;
+  return `<div class="line-row ${visible ? "" : "is-hidden"}" data-line-kind="${kind}" data-visible="${visible}">
+    <button type="button" class="line-eye" data-line-toggle title="${visible ? "隐藏这条线" : "显示这条线"}" aria-label="${visible ? "隐藏" : "显示"}">${icon(visible ? "eye" : "eyeOff", 13)}</button>
+    <label class="line-period"><input class="line-input mono" data-field="period" type="number" min="2" max="250" value="${line.period}" /></label>
+    ${lineDd("color", line)}
+    ${lineDd("width", line)}
+    ${lineDd("dashed", line)}
+    <button type="button" class="line-remove" data-line-remove title="删除这条线" aria-label="删除">${icon("close", 11)}</button>
+  </div>`;
+}
+
 function lineEditor(kind: "ma" | "ema", label: string, enabled: boolean, lines: ChartPrefs["maLines"], desc: string): string {
   return `<section class="indicator-editor">
     <div class="indicator-editor-head">
       <label class="indicator-switch"><input type="checkbox" id="pref-${kind}" ${enabled ? "checked" : ""} /><span></span><b>${label}</b><em>${desc}</em></label>
-      <span class="indicator-editor-hint">颜色 · 粗细 · 虚实</span>
+      <span class="indicator-editor-hint">颜色 · 粗细 · 虚实 · 单线隐藏</span>
     </div>
-    <div class="line-editor">
-      ${lines
-        .map(
-          (line, i) => `<div class="line-row" data-line-kind="${kind}" data-index="${i}">
-            <label class="line-period"><span>周期</span><input class="line-input mono" data-field="period" type="number" min="2" max="250" value="${line.period}" /></label>
-            <label class="line-field color-field"><span class="line-swatch" style="background:${LINE_COLORS.find((c) => c.value === line.color)?.css || "var(--brass)"}"></span><select class="line-select" data-field="color">${LINE_COLORS.map((c) => `<option value="${c.value}" ${c.value === line.color ? "selected" : ""}>${c.label}</option>`).join("")}</select></label>
-            <label class="line-field"><select class="line-select" data-field="width">${[0.8, 1, 1.2, 1.5, 2, 2.5].map((w) => `<option value="${w}" ${Math.abs(w - line.width) < 0.01 ? "selected" : ""}>${w}px</option>`).join("")}</select></label>
-            <label class="line-field"><select class="line-select" data-field="dashed"><option value="0" ${!line.dashed ? "selected" : ""}>实线</option><option value="1" ${line.dashed ? "selected" : ""}>虚线</option></select></label>
-          </div>`,
-        )
-        .join("")}
+    <div class="line-editor" data-line-editor="${kind}">
+      ${lines.map((line) => lineRow(kind, line)).join("")}
+    </div>
+    <div class="line-editor-foot">
+      <button type="button" class="line-add" data-add-line="${kind}">${icon("plus", 11)} 添加一条</button>
+      <span class="line-count">${lines.length}/4</span>
     </div>
   </section>`;
 }
@@ -1130,7 +1206,7 @@ function openIndicatorSettings(): void {
             <label>D <input class="line-input mono" id="pref-kdj-d" type="number" min="1" max="20" value="${p.kdjD}" /></label>
           </div>
         </section>
-        <p class="modal-hint">最多 4 条线；清空某条周期即可移除该线。参数保存到本地数据库，重启后保留。</p>
+        <p class="modal-hint">最多 4 条线，至少保留 1 条；眼睛按钮可单独隐藏。参数保存到本地数据库，重启后保留。</p>
       </div>
       <div class="modal-foot">
         <button class="btn" data-close-indicator>取消</button>
@@ -1143,12 +1219,78 @@ function openIndicatorSettings(): void {
   overlay.addEventListener("mousedown", (ev) => {
     if (ev.target === overlay) closeOverlay();
   });
-  overlay.querySelectorAll<HTMLSelectElement>('[data-field="color"]').forEach((sel) => {
-    sel.addEventListener("change", () => {
-      const swatch = sel.parentElement?.querySelector<HTMLElement>(".line-swatch");
-      if (swatch) swatch.style.background = LINE_COLORS.find((c) => c.value === sel.value)?.css || "var(--brass)";
+  const syncLineEditor = (kind: "ma" | "ema") => {
+    const editor = overlay.querySelector<HTMLElement>(`[data-line-editor="${kind}"]`);
+    if (!editor) return;
+    const rows = Array.from(editor.querySelectorAll<HTMLElement>(".line-row"));
+    const count = editor.parentElement?.querySelector<HTMLElement>(".line-count");
+    if (count) count.textContent = `${rows.length}/4`;
+    const add = editor.parentElement?.querySelector<HTMLButtonElement>(`[data-add-line="${kind}"]`);
+    if (add) add.disabled = rows.length >= 4;
+    rows.forEach((row) => {
+      const remove = row.querySelector<HTMLButtonElement>("[data-line-remove]");
+      if (remove) remove.disabled = rows.length <= 1;
     });
+  };
+  overlay.addEventListener("click", (event) => {
+    const target = event.target as HTMLElement;
+    const add = target.closest<HTMLElement>("[data-add-line]");
+    if (add) {
+      const kind = add.dataset.addLine as "ma" | "ema";
+      const editor = overlay.querySelector<HTMLElement>(`[data-line-editor="${kind}"]`);
+      if (!editor) return;
+      const rows = Array.from(editor.querySelectorAll<HTMLElement>(".line-row"));
+      if (rows.length >= 4) return;
+      const used = new Set(rows.map((row) => Number(row.querySelector<HTMLInputElement>('[data-field="period"]')?.value)).filter((v) => Number.isFinite(v)));
+      const period = LINE_PERIODS.find((v) => !used.has(v)) ?? 21;
+      const palette = kind === "ma" ? ["sky", "amber", "violet", "brass"] : ["brass", "up", "down", "violet"];
+      const line: ChartPrefs["maLines"][number] = {
+        period,
+        color: palette[rows.length % palette.length],
+        width: kind === "ma" ? 1 : 1.2,
+        dashed: kind === "ma",
+        visible: true,
+      };
+      editor.insertAdjacentHTML("beforeend", lineRow(kind, line));
+      syncLineEditor(kind);
+      return;
+    }
+    const remove = target.closest<HTMLElement>("[data-line-remove]");
+    if (remove) {
+      const row = remove.closest<HTMLElement>(".line-row");
+      const editor = row?.parentElement;
+      if (!row || !editor) return;
+      if (editor.querySelectorAll(".line-row").length <= 1) {
+        toast("至少保留一条线", "error");
+        return;
+      }
+      const kind = editor.dataset.lineEditor as "ma" | "ema";
+      row.remove();
+      syncLineEditor(kind);
+      return;
+    }
+    const eye = target.closest<HTMLElement>("[data-line-toggle]");
+    if (eye) {
+      const row = eye.closest<HTMLElement>(".line-row");
+      if (!row) return;
+      const visible = row.dataset.visible === "false";
+      if (!visible) {
+        const editor = row.parentElement;
+        const shown = Array.from(editor?.querySelectorAll<HTMLElement>(".line-row") ?? []).filter((item) => item.dataset.visible !== "false");
+        if (shown.length <= 1 && shown[0] === row) {
+          toast("至少保留一条可见线", "error");
+          return;
+        }
+      }
+      row.dataset.visible = String(visible);
+      row.classList.toggle("is-hidden", !visible);
+      eye.innerHTML = icon(visible ? "eye" : "eyeOff", 13);
+      eye.setAttribute("title", visible ? "隐藏这条线" : "显示这条线");
+      eye.setAttribute("aria-label", visible ? "隐藏" : "显示");
+    }
   });
+  syncLineEditor("ma");
+  syncLineEditor("ema");
   overlay.querySelector("#indicator-apply")?.addEventListener("click", async () => {
     const collect = (kind: "ma" | "ema") => {
       const rows = Array.from(overlay.querySelectorAll<HTMLElement>(`[data-line-kind="${kind}"]`));
@@ -1157,10 +1299,10 @@ function openIndicatorSettings(): void {
         const period = Number(row.querySelector<HTMLInputElement>('[data-field="period"]')?.value);
         if (!Number.isFinite(period) || period < 2 || period > 250) continue;
         if (out.some((line) => line.period === period)) continue;
-        const color = row.querySelector<HTMLSelectElement>('[data-field="color"]')?.value || "brass";
-        const width = Number(row.querySelector<HTMLSelectElement>('[data-field="width"]')?.value) || 1;
-        const dashed = row.querySelector<HTMLSelectElement>('[data-field="dashed"]')?.value === "1";
-        out.push({ period: Math.round(period), color, width, dashed });
+        const color = row.querySelector<HTMLElement>('[data-field="color"]')?.dataset.value || "brass";
+        const width = Number(row.querySelector<HTMLElement>('[data-field="width"]')?.dataset.value) || 1;
+        const dashed = row.querySelector<HTMLElement>('[data-field="dashed"]')?.dataset.value === "1";
+        out.push({ period: Math.round(period), color, width, dashed, visible: row.dataset.visible !== "false" });
       }
       return out.slice(0, 4);
     };
@@ -1273,6 +1415,7 @@ function handleContextMenu(e: MouseEvent): void {
 
 function closeOverlay(): void {
   if (!overlayKind) return;
+  closeDropdown();
   hideHover();
   overlayKind = null;
   state.searchOpen = false;
@@ -1473,7 +1616,7 @@ function openSettings(): void {
         <div class="setting-section">
           <div class="setting-label">关于</div>
           <div class="about-text">
-            天梯 · A股涨停复盘　<b>v1.2</b><br />
+            天梯 · A股涨停复盘　<b>v1.2.1</b><br />
             涨停与板块数据来自同花顺公开接口，K线来自东方财富公开接口。<br />
             所有数据仅用于学习复盘，不构成投资建议。快捷键：<b>Ctrl K</b> 搜索，<b>← →</b> 切换交易日，<b>Esc</b> 关闭浮层。
           </div>

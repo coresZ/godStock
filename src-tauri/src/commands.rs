@@ -150,6 +150,11 @@ pub async fn get_kline(
         _ => "day",
     }
     .to_string();
+    let prev_close = if period == "1m" {
+        source::fetch_prev_close_for_stock(&state.client, &code).await
+    } else {
+        None
+    };
 
     let (cached, cached_name, _) = {
         let conn = state_conn(&state)?;
@@ -169,6 +174,7 @@ pub async fn get_kline(
             period,
             latest_date: cached.last().map(|c| c.date.clone()).unwrap_or_default(),
             candles: cached,
+            prev_close,
             source: "cache".into(),
             warning: None,
         });
@@ -187,6 +193,7 @@ pub async fn get_kline(
                 period,
                 latest_date: candles.last().map(|c| c.date.clone()).unwrap_or_default(),
                 candles,
+                prev_close,
                 source: "network".into(),
                 warning: None,
             })
@@ -199,6 +206,7 @@ pub async fn get_kline(
                     period,
                     latest_date: cached.last().map(|c| c.date.clone()).unwrap_or_default(),
                     candles: cached,
+                    prev_close,
                     source: "cache".into(),
                     warning: Some(format!("行情更新失败，展示本地K线 · {e}")),
                 });
@@ -262,6 +270,11 @@ pub async fn get_index_kline(
     } else {
         name.trim().to_string()
     };
+    let prev_close = if period == "1m" {
+        source::fetch_prev_close(&state.client, &secid).await
+    } else {
+        None
+    };
     let (cached, _cached_name, _) = {
         let conn = state_conn(&state)?;
         let loaded = db::load_klines(&conn, &secid, &period).map_err(|e| err(e))?;
@@ -274,6 +287,7 @@ pub async fn get_index_kline(
             period,
             latest_date: cached.last().map(|c| c.date.clone()).unwrap_or_default(),
             candles: cached,
+            prev_close,
             source: "cache".into(),
             warning: None,
         });
@@ -291,6 +305,7 @@ pub async fn get_index_kline(
                 period,
                 latest_date: candles.last().map(|c| c.date.clone()).unwrap_or_default(),
                 candles,
+                prev_close,
                 source: "network".into(),
                 warning: None,
             })
@@ -303,6 +318,7 @@ pub async fn get_index_kline(
                     period,
                     latest_date: cached.last().map(|c| c.date.clone()).unwrap_or_default(),
                     candles: cached,
+                    prev_close,
                     source: "cache".into(),
                     warning: Some(format!("指数行情更新失败，展示本地缓存 · {e}")),
                 });
@@ -514,6 +530,7 @@ fn legacy_lines(periods: &[i64], width: f64, dashed: bool) -> Vec<IndicatorLine>
             color: colors[i % colors.len()].into(),
             width,
             dashed,
+            visible: true,
         })
         .collect()
 }
@@ -536,6 +553,7 @@ fn clean_lines(lines: Vec<IndicatorLine>, defaults: &[IndicatorLine]) -> Vec<Ind
             color,
             width: line.width.clamp(0.6, 3.0),
             dashed: line.dashed,
+            visible: line.visible,
         });
         if out.len() >= 4 {
             break;

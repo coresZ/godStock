@@ -30,6 +30,8 @@ const ICONS: Record<string, string> = {
   info: '<circle cx="12" cy="12" r="8"/><path d="M12 11v5M12 8.2v.2"/>',
   sliders: '<path d="M4 8h9M17 8h3M4 16h3M11 16h9"/><circle cx="15" cy="8" r="2"/><circle cx="9" cy="16" r="2"/>',
   download: '<path d="M12 4v11m0 0 4-4m-4 4-4-4M5 20h14"/>',
+  eye: '<path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6S2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="2.6"/>',
+  eyeOff: '<path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6S2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="2.6"/><path d="m4 4 16 16"/>',
   trash: '<path d="M5 7h14M9.5 7V5.2h5V7M7.2 7l.7 12.2h8.2L16.8 7M10 10.5v5M14 10.5v5"/>',
   folder: '<path d="M3.8 7.5c0-1 .8-1.8 1.8-1.8h4l1.7 2h7.1c1 0 1.8.8 1.8 1.8v8c0 1-.8 1.8-1.8 1.8H5.6c-1 0-1.8-.8-1.8-1.8Z"/>',
   expand: '<path d="M8 3.8H4v4M16 3.8h4v4M20 16v4h-4M4 16v4h4"/>',

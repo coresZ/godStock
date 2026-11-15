@@ -171,6 +171,21 @@ function tableHead(): string {
   </tr>`;
 }
 
+function sectorDropdown(): string {
+  const sectors = state.day?.sectors ?? [];
+  const selected = sectors.find((s) => s.code === state.poolSector);
+  return `<div class="dd sector-dd">
+    <button type="button" class="dd-trigger" data-dd-trigger data-dd-kind="sector" data-dd-menu="196" data-value="${state.poolSector}" aria-haspopup="listbox" aria-expanded="false">
+      <span class="dd-label">${selected ? esc(selected.name) : "全部板块"}</span>
+      ${icon("chevronDown", 12)}
+    </button>
+    <div class="dd-options" hidden>
+      <button type="button" data-value="">全部板块</button>
+      ${sectors.map((s) => `<button type="button" data-value="${s.code}">${esc(s.name)} · ${s.limitUpNum}</button>`).join("")}
+    </div>
+  </div>`;
+}
+
 function renderToolbar(): string {
   return `<div class="pool-toolbar">
     <div class="pool-title"><h2>盘口池</h2><span>${state.day ? String(filterStocks().length).padStart(2, "0") : "—"}</span></div>
@@ -180,13 +195,7 @@ function renderToolbar(): string {
     <span class="pool-divider"></span>
     ${state.poolKind === "limitUp" ? FILTERS.map((f) => `<button class="chip ${state.poolFilter === f.key ? "active" : ""}" data-action="pool-filter" data-value="${f.key}">${f.label}<span class="count">${countFor(f.key)}</span></button>`).join("") : ""}
     <span class="toolbar-spacer"></span>
-    ${state.poolKind === "limitUp" ? `<div class="select-wrap">
-      <select class="select" data-pool-sector aria-label="按板块筛选" title="按板块筛选">
-        <option value="">全部板块</option>
-        ${(state.day?.sectors ?? []).map((s) => `<option value="${s.code}" ${state.poolSector === s.code ? "selected" : ""}>${esc(s.name)} · ${s.limitUpNum}</option>`).join("")}
-      </select>
-      ${icon("chevronDown", 13)}
-    </div>` : ""}
+    ${state.poolKind === "limitUp" ? sectorDropdown() : ""}
     <button class="chip watch-batch" data-action="batch-watch">${icon("wallet", 13)} 批量自选<span class="count">${filterStocks().length}</span></button>
     <label class="pool-search">${icon("search", 13)}<input type="text" data-pool-search placeholder="筛选名称 / 题材" value="${esc(state.poolQuery)}" autocomplete="off" spellcheck="false" /></label>
   </div>

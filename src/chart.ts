@@ -232,7 +232,7 @@ export class KLineChart {
   private computeIndicators(): void {
     const closes = this.candles.map((c) => c.close);
     if (this.config.maEnabled) {
-      this.maSeries = this.config.maLines.slice(0, 4).map((line) => ({
+      this.maSeries = this.config.maLines.filter((line) => line.visible !== false).slice(0, 4).map((line) => ({
         period: line.period,
         values: ma(closes, line.period),
         color: this.lineColor(line.color),
@@ -243,7 +243,7 @@ export class KLineChart {
       this.maSeries = [];
     }
     if (this.config.emaEnabled) {
-      this.emaSeries = this.config.emaLines.slice(0, 4).map((line) => ({
+      this.emaSeries = this.config.emaLines.filter((line) => line.visible !== false).slice(0, 4).map((line) => ({
         period: line.period,
         values: ema(closes, line.period),
         color: this.lineColor(line.color),

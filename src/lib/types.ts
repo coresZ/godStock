@@ -1,5 +1,6 @@
 export type Theme = "dark" | "light";
 export type Period = "1m" | "15m" | "30m" | "60m" | "day" | "week" | "month" | "year";
+export type ChartMode = "kline" | "timeshare";
 export type ViewName = "ladder" | "pool" | "timeline" | "chart";
 export type PoolKind = "limitUp" | "openLimit" | "limitDown";
 
@@ -96,6 +97,7 @@ export interface KlinePayload {
   period: Period;
   candles: KlineCandle[];
   latestDate: string;
+  prevClose?: number | null;
   source: string;
   warning: string | null;
 }
@@ -143,6 +145,7 @@ export interface IndicatorLine {
   color: string;
   width: number;
   dashed: boolean;
+  visible: boolean;
 }
 
 export interface ChartPrefs {
