@@ -55,6 +55,8 @@ pub struct DayStats {
     pub early_seal: i64,
     pub avg_seal: f64,
     pub avg_success: f64,
+    pub open_limit: i64,
+    pub limit_down: i64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -64,6 +66,8 @@ pub struct DayPayload {
     pub weekday: String,
     pub stats: DayStats,
     pub stocks: Vec<Stock>,
+    pub open_limit: Vec<Stock>,
+    pub limit_down: Vec<Stock>,
     pub sectors: Vec<Sector>,
     pub fetched_at: i64,
     pub source: String,
@@ -131,6 +135,57 @@ pub struct SearchItem {
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
     pub theme: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct WatchStock {
+    pub code: String,
+    pub name: String,
+    pub market: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct WatchGroup {
+    pub id: i64,
+    pub name: String,
+    pub stocks: Vec<WatchStock>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct WatchAddResult {
+    pub added: i64,
+    pub skipped: i64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ChartPrefs {
+    pub ma_enabled: bool,
+    pub ma_periods: Vec<i64>,
+    pub ema_enabled: bool,
+    pub ema_periods: Vec<i64>,
+    pub kdj_enabled: bool,
+    pub kdj_n: i64,
+    pub kdj_k: i64,
+    pub kdj_d: i64,
+}
+
+impl Default for ChartPrefs {
+    fn default() -> Self {
+        Self {
+            ma_enabled: false,
+            ma_periods: vec![5, 10, 20, 60],
+            ema_enabled: true,
+            ema_periods: vec![5, 10, 20, 60],
+            kdj_enabled: true,
+            kdj_n: 9,
+            kdj_k: 3,
+            kdj_d: 3,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]

@@ -46,6 +46,7 @@ pub fn run() {
             commands::get_calendar,
             commands::get_day,
             commands::get_kline,
+            commands::get_index_kline,
             commands::get_indices,
             commands::search_stocks,
             commands::recent_stocks,
@@ -53,6 +54,14 @@ pub fn run() {
             commands::set_theme,
             commands::get_data_info,
             commands::clear_cache,
+            commands::get_watch_groups,
+            commands::create_watch_group,
+            commands::rename_watch_group,
+            commands::delete_watch_group,
+            commands::add_watch_stocks,
+            commands::remove_watch_stock,
+            commands::get_chart_prefs,
+            commands::save_chart_prefs,
             commands::window_control,
             commands::open_data_dir
         ])

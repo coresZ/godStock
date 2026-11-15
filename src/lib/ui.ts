@@ -11,8 +11,11 @@ const ICONS: Record<string, string> = {
   refresh:
     '<path d="M19 8.5A7.5 7.5 0 1 0 19.4 13"/><path d="M19 4.5v4h-4"/>',
   chevronDown: '<path d="m7 9.5 5 5 5-5"/>',
+  chevronUp: '<path d="m7 14.5 5-5 5 5"/>',
   chevronLeft: '<path d="m14.5 5.5-6 6.5 6 6.5"/>',
   chevronRight: '<path d="m9.5 5.5 6 6.5-6 6.5"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  edit: '<path d="M4.5 19.5h4l10-10a2.1 2.1 0 0 0-3-3l-10 10v3Z"/><path d="m14 6.5 3 3"/>',
   close: '<path d="m6 6 12 12M18 6 6 18"/>',
   minimize: '<path d="M5 12h14"/>',
   maximize: '<rect x="5.5" y="5.5" width="13" height="13" rx="1.2"/>',

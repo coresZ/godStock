@@ -12,7 +12,7 @@ import { isToday, neighbors, state } from "../lib/state";
 export function renderTitlebar(): string {
   return `
   <header class="titlebar">
-    <div class="titlebar-drag" data-tauri-drag-region></div>
+    <div class="titlebar-drag"></div>
     <div class="titlebar-brand">
       <img class="brand-mark" src="./mark.svg" alt="" />
       <span class="brand-word">天梯</span>
@@ -36,7 +36,8 @@ export function renderTitlebar(): string {
 export function renderRail(): string {
   const items: Array<{ view: string; label: string; iconName: string; title: string }> = [
     { view: "ladder", label: "天梯", iconName: "ladder", title: "连板天梯" },
-    { view: "pool", label: "涨停池", iconName: "list", title: "涨停池明细" },
+    { view: "pool", label: "涨停池", iconName: "list", title: "涨停 / 炸板 / 跌停" },
+    { view: "timeline", label: "时间轴", iconName: "activity", title: "涨跌停时间轴" },
     { view: "chart", label: "K线", iconName: "chart", title: "个股K线" },
   ];
   return `
@@ -55,7 +56,7 @@ export function renderRail(): string {
         ${icon(state.theme === "dark" ? "sun" : "moon", 18)}
       </button>
       <button class="rail-tool" data-action="settings" title="设置" aria-label="设置">${icon("settings", 18)}</button>
-      <span class="rail-version">v1.0</span>
+      <span class="rail-version">v1.1</span>
     </div>
   </aside>`;
 }
@@ -80,14 +81,14 @@ export function renderViewHead(): string {
   const metricsHtml = stats
     ? [
         metric("涨停", String(stats.total), "只", "", "当日涨停家数"),
-        metric("连板", String(stats.consecutive), "只", "", "连续两个交易日及以上涨停"),
+        metric("炸板", String(stats.openLimit), "只", "break", "盘中触及涨停后打开"),
+        metric("跌停", String(stats.limitDown), "只", "fall", "当日跌停家数"),
         metric("最高", String(stats.maxStreak), "板", "highlight", "连续涨停高度"),
-        metric("一字", String(stats.oneWord), "只", "", "一字涨停家数"),
       ].join("")
-    : ["涨停", "连板", "最高", "一字"]
+    : ["涨停", "炸板", "跌停", "最高"]
         .map(
           (label, i) =>
-            `<div class="metric ${i === 2 ? "highlight" : ""}"><span class="metric-label">${label}</span><span class="sk sk-metric"></span></div>`,
+            `<div class="metric ${i === 3 ? "highlight" : ""}"><span class="metric-label">${label}</span><span class="sk sk-metric"></span></div>`,
         )
         .join("");
 
@@ -127,13 +128,13 @@ export function renderIndices(): string {
     ? state.indices
         .slice(0, 3)
         .map(
-          (q) => `<div class="index" title="${esc(q.name)}">
+          (q) => `<button class="index" data-index-secid="${esc(q.code)}" data-index-name="${esc(q.name)}" title="查看 ${esc(q.name)} K线">
             <div class="index-copy">
               <span class="index-name">${esc(shortIndexName(q.name))}</span>
               <span class="index-value">${q.price.toFixed(2)}<span class="index-pct ${q.pct > 0 ? "text-up" : q.pct < 0 ? "text-down" : "text-flat"}">${fmtPct(q.pct)}</span></span>
             </div>
             ${sparkline(q.spark, 38, 18, "index-spark")}
-          </div>`,
+          </button>`,
         )
         .join("")
     : `<div class="index"><div class="index-copy"><span class="index-name">上证</span><span class="sk sk-index"></span></div></div>
@@ -148,7 +149,7 @@ function renderHeadSkeleton(): string {
       <div><span class="sk sk-date"></span></div>
     </div>
     <div class="metrics">
-      ${["涨停", "连板", "最高", "一字"].map((l, i) => `<div class="metric ${i === 2 ? "highlight" : ""}"><span class="metric-label">${l}</span><span class="sk sk-metric"></span></div>`).join("")}
+      ${["涨停", "炸板", "跌停", "最高"].map((l, i) => `<div class="metric ${i === 3 ? "highlight" : ""}"><span class="metric-label">${l}</span><span class="sk sk-metric"></span></div>`).join("")}
     </div>
     <div class="header-right"><div class="indices"><span class="sk sk-index"></span><span class="sk sk-index"></span><span class="sk sk-index"></span></div></div>
   </header>`;

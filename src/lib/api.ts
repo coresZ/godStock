@@ -1,5 +1,6 @@
 import type {
   CalendarInfo,
+  ChartPrefs,
   DataInfo,
   DayPayload,
   IndexQuote,
@@ -8,6 +9,9 @@ import type {
   SearchItem,
   Settings,
   Theme,
+  WatchAddResult,
+  WatchGroup,
+  WatchStock,
 } from "./types";
 
 declare global {
@@ -37,6 +41,8 @@ export const api = {
   getDay: (date: string, refresh = false) => call<DayPayload>("get_day", { date, refresh }),
   getKline: (code: string, period: Period, refresh = false) =>
     call<KlinePayload>("get_kline", { code, period, refresh }),
+  getIndexKline: (secid: string, name: string, period: Period, refresh = false) =>
+    call<KlinePayload>("get_index_kline", { secid, name, period, refresh }),
   getIndices: (refresh = false) => call<IndexQuote[]>("get_indices", { refresh }),
   searchStocks: (query: string) => call<SearchItem[]>("search_stocks", { query }),
   recentStocks: () => call<SearchItem[]>("recent_stocks"),
@@ -44,7 +50,17 @@ export const api = {
   setTheme: (theme: Theme) => call<void>("set_theme", { theme }),
   getDataInfo: () => call<DataInfo>("get_data_info"),
   clearCache: () => call<void>("clear_cache"),
-  windowControl: (action: "minimize" | "maximize" | "close") =>
+  getWatchGroups: () => call<WatchGroup[]>("get_watch_groups"),
+  createWatchGroup: (name: string) => call<number>("create_watch_group", { name }),
+  renameWatchGroup: (id: number, name: string) => call<void>("rename_watch_group", { id, name }),
+  deleteWatchGroup: (id: number) => call<void>("delete_watch_group", { id }),
+  addWatchStocks: (groupId: number, stocks: WatchStock[]) =>
+    call<WatchAddResult>("add_watch_stocks", { groupId, stocks }),
+  removeWatchStock: (groupId: number, code: string) =>
+    call<void>("remove_watch_stock", { groupId, code }),
+  getChartPrefs: () => call<ChartPrefs>("get_chart_prefs"),
+  saveChartPrefs: (prefs: ChartPrefs) => call<void>("save_chart_prefs", { prefs }),
+  windowControl: (action: "drag" | "minimize" | "maximize" | "close") =>
     call<void>("window_control", { action }),
   openDataDir: () => call<void>("open_data_dir"),
 };

@@ -1,18 +1,28 @@
 import "./styles.css";
 import { api } from "./lib/api";
-import { availableDates, neighbors, parseHash, state } from "./lib/state";
-import type { SearchItem, Theme } from "./lib/types";
+import { availableDates, filterStocks, neighbors, parseHash, state } from "./lib/state";
+import type { ChartPrefs, ChartSelection, Period, SearchItem, Theme, WatchStock } from "./lib/types";
 import { esc, fmtBytes, fmtShortDate, icon, relTime, weekdayFromYmd } from "./lib/ui";
 import { KLineChart } from "./chart";
-import { renderChartView } from "./views/chart";
+import { indicatorSummary, renderChartToolbar, renderChartView, renderWatchPanel } from "./views/chart";
 import { renderIndices, renderRail, renderTitlebar, syncLabel } from "./views/common";
 import { renderLadder } from "./views/ladder";
-import { renderPool, updatePoolTable } from "./views/pool";
+import { renderPool, updatePoolStage, updatePoolTable } from "./views/pool";
+import { renderTimeline } from "./views/timeline";
 
 let chart: KLineChart | null = null;
 let dayToken = 0;
 let chartToken = 0;
-let overlayKind: "search" | "settings" | "date" | null = null;
+let overlayKind:
+  | "search"
+  | "settings"
+  | "date"
+  | "watch-add"
+  | "group-dialog"
+  | "group-delete"
+  | "indicator"
+  | "context"
+  | null = null;
 let overlayRoot!: HTMLElement;
 let toastRoot!: HTMLElement;
 let searchTimer: number | undefined;
@@ -45,11 +55,18 @@ async function start(): Promise<void> {
   }
   applyTheme(state.theme, false);
 
+  void loadChartPrefs();
+  void loadWatchlist();
   const route = parseHash();
   state.view = route.view;
   state.returnView = route.view === "chart" ? "ladder" : route.view;
   if (route.code) {
-    state.chartStock = { code: route.code, name: "", market: "" };
+    if (route.code.startsWith("IDX-")) {
+      const secid = route.code.slice(4);
+      state.chartStock = { code: secid, name: "", market: "", kind: "index", secid };
+    } else {
+      state.chartStock = { code: route.code, name: "", market: "", kind: "stock" };
+    }
     state.chartLoading = true;
   }
 
@@ -61,7 +78,7 @@ async function start(): Promise<void> {
   await ensureCalendar();
   if (state.date) await loadDay(state.date, true);
   if (state.view === "chart" && state.chartStock) {
-    await loadChart(state.chartStock.code);
+    await loadChart();
   }
   window.setTimeout(() => {
     document.querySelector(".ladder")?.classList.remove("is-entering");
@@ -95,7 +112,10 @@ function applyTheme(theme: Theme, persist = true): void {
   }
   if (booted) {
     replaceRail();
-    chart?.redraw();
+    if (chart) {
+      chart.redraw();
+      chart.setConfig(state.chartPrefs);
+    }
   }
 }
 
@@ -127,7 +147,10 @@ function updateChrome(): void {
 }
 
 function syncHash(): void {
-  const suffix = state.view === "chart" && state.chartStock ? `/${state.chartStock.code}` : "";
+  let suffix = "";
+  if (state.view === "chart" && state.chartStock) {
+    suffix = state.chartStock.kind === "index" ? `/IDX-${state.chartStock.secid || state.chartStock.code}` : `/${state.chartStock.code}`;
+  }
   const hash = `#/${state.view}${suffix}`;
   if (window.location.hash !== hash) history.replaceState(null, "", hash);
 }
@@ -171,6 +194,8 @@ async function loadDay(date: string, initial = false): Promise<void> {
     state.poolSector = "";
     state.poolQuery = "";
     state.poolFilter = "all";
+    state.poolKind = "limitUp";
+    state.poolSort = { key: "streak", dir: -1 };
   }
   state.day = same;
   state.dayLoading = !same;
@@ -278,7 +303,7 @@ function changeDate(date: string | null | undefined): void {
 
 /* ————————————————— routing ————————————————— */
 
-function navigate(view: "ladder" | "pool" | "chart"): void {
+function navigate(view: "ladder" | "pool" | "timeline" | "chart"): void {
   if (view === "chart") {
     if (!state.chartStock) {
       openSearch();
@@ -288,7 +313,7 @@ function navigate(view: "ladder" | "pool" | "chart"): void {
     syncHash();
     renderMain();
     updateChrome();
-    if (!state.chartData && !state.chartLoading) void loadChart(state.chartStock.code);
+    if (!state.chartData && !state.chartLoading) void loadChart();
     return;
   }
   if (state.view !== "chart") state.returnView = view;
@@ -301,43 +326,67 @@ function navigate(view: "ladder" | "pool" | "chart"): void {
 function openChart(code: string, name: string, market = ""): void {
   if (!code) return;
   if (state.view !== "chart") state.returnView = state.view;
-  state.chartStock = { code, name, market };
+  state.chartStock = { code, name, market, kind: "stock" };
   state.view = "chart";
   state.chartData = null;
   state.chartError = null;
   state.chartLoading = true;
   syncHash();
   renderMain();
-  void loadChart(code);
+  void loadChart();
+}
+
+function openIndexChart(secid: string, name: string): void {
+  if (!secid) return;
+  if (state.view !== "chart") state.returnView = state.view;
+  state.chartStock = { code: secid, name, market: "", kind: "index", secid };
+  state.view = "chart";
+  state.chartData = null;
+  state.chartError = null;
+  state.chartLoading = true;
+  syncHash();
+  renderMain();
+  void loadChart();
 }
 
 function chartBack(): void {
   const back = state.returnView === "chart" ? "ladder" : state.returnView;
-  state.view = back;
+  state.view = back === "timeline" ? "timeline" : back;
   syncHash();
   renderMain();
   updateChrome();
 }
 
-async function loadChart(code: string): Promise<void> {
+async function fetchChartData(period: Period, refresh: boolean) {
+  const stock = state.chartStock!;
+  if (stock.kind === "index") {
+    return api.getIndexKline(stock.secid || stock.code, stock.name, period, refresh);
+  }
+  return api.getKline(stock.code, period, refresh);
+}
+
+async function loadChart(): Promise<void> {
+  const stock = state.chartStock;
+  if (!stock) return;
   const token = ++chartToken;
   const period = state.chartPeriod;
   state.chartLoading = true;
   state.chartError = null;
-  renderMain();
+  renderMain({ animate: false });
   try {
-    const data = await api.getKline(code, period, false);
+    const data = await fetchChartData(period, false);
     if (token !== chartToken) return;
     state.chartData = data;
     state.chartLoading = false;
     if (state.chartStock && !state.chartStock.name && data.name) state.chartStock.name = data.name;
-    renderMain();
+    renderMain({ animate: false });
     if (data.source === "cache") void refreshChart(token);
   } catch (e) {
     if (token !== chartToken) return;
     state.chartLoading = false;
     state.chartError = messageFrom(e, "K线加载失败");
-    renderMain();
+    renderMain({ animate: false });
+    if (!state.chartData) toast(state.chartError, "error");
   }
 }
 
@@ -346,7 +395,7 @@ async function refreshChart(token: number): Promise<void> {
   if (!stock) return;
   const period = state.chartPeriod;
   try {
-    const data = await api.getKline(stock.code, period, true);
+    const data = await fetchChartData(period, true);
     if (token !== chartToken) return;
     const old = state.chartData;
     const changed =
@@ -355,14 +404,14 @@ async function refreshChart(token: number): Promise<void> {
       old.latestDate !== data.latestDate ||
       old.candles[old.candles.length - 1]?.close !== data.candles[data.candles.length - 1]?.close;
     state.chartData = data;
-    if (changed) renderMain();
+    if (changed) renderMain({ animate: false });
     if (data.warning) toast(data.warning, "error");
   } catch {
     /* cache remains usable */
   }
 }
 
-function renderMain(): void {
+function renderMain(opts: { animate?: boolean } = {}): void {
   const main = document.getElementById("main");
   if (!main) return;
   const scrolls = {
@@ -374,9 +423,11 @@ function renderMain(): void {
   chart = null;
   let html = "";
   if (state.view === "pool") html = renderPool();
+  else if (state.view === "timeline") html = renderTimeline();
   else if (state.view === "chart") html = renderChartView();
   else html = renderLadder();
   main.innerHTML = html;
+  if (opts.animate === false) main.querySelector(".view")?.classList.add("no-anim");
   if (state.view === "chart" && state.chartStock && state.chartData) mountChart();
   const ladderScroller = main.querySelector<HTMLElement>(".ladder-main");
   if (ladderScroller) ladderScroller.scrollTop = scrolls.ladder;
@@ -393,8 +444,7 @@ function mountChart(): void {
   chart = new KLineChart(stage, {
     period: state.chartPeriod,
     range: state.chartRange,
-    showEma: state.chartEma,
-    showKdj: state.chartKdj,
+    ...state.chartPrefs,
   });
   chart.setData(state.chartData.candles);
 }
@@ -407,7 +457,18 @@ function bindGlobals(): void {
   app.addEventListener("input", (e) => handleInput(e));
   app.addEventListener("change", (e) => handleChange(e));
   app.addEventListener("keydown", (e) => handleKeydown(e));
-  document.querySelector(".titlebar-drag")?.addEventListener("dblclick", () => {
+  app.addEventListener("contextmenu", (e) => handleContextMenu(e));
+  const titlebar = document.querySelector<HTMLElement>(".titlebar");
+  const interactive = (target: HTMLElement) => Boolean(target.closest("button,input,a,.titlebar-search,.window-controls"));
+  titlebar?.addEventListener("mousedown", (e) => {
+    const target = e.target as HTMLElement;
+    if (e.button !== 0 || interactive(target)) return;
+    e.preventDefault();
+    void api.windowControl("drag").catch(() => {});
+  });
+  titlebar?.addEventListener("dblclick", (e) => {
+    const target = e.target as HTMLElement;
+    if (interactive(target)) return;
     void api.windowControl("maximize");
   });
   window.setInterval(() => {
@@ -455,7 +516,8 @@ function handleChange(e: Event): void {
   const target = e.target as HTMLSelectElement;
   if (target.matches("[data-pool-sector]")) {
     state.poolSector = target.value;
-    renderMain();
+    state.poolKind = "limitUp";
+    updatePoolStage();
   }
 }
 
@@ -469,18 +531,22 @@ function handleClick(e: MouseEvent): void {
   }
   const nav = target.closest<HTMLElement>("[data-nav]");
   if (nav) {
-    navigate(nav.dataset.nav as "ladder" | "pool" | "chart");
+    navigate(nav.dataset.nav as "ladder" | "pool" | "timeline" | "chart");
+    return;
+  }
+  const indexEl = target.closest<HTMLElement>("[data-index-secid]");
+  if (indexEl) {
+    openIndexChart(indexEl.dataset.indexSecid!, indexEl.dataset.indexName || "指数");
     return;
   }
   const periodBtn = target.closest<HTMLElement>("[data-chart-period]");
   if (periodBtn) {
-    const p = periodBtn.dataset.chartPeriod as "day" | "week" | "month";
+    const p = periodBtn.dataset.chartPeriod as Period;
     if (p !== state.chartPeriod) {
       state.chartPeriod = p;
-      state.chartData = null;
       state.chartLoading = true;
-      renderMain();
-      if (state.chartStock) void loadChart(state.chartStock.code);
+      renderMain({ animate: false });
+      void loadChart();
     }
     return;
   }
@@ -497,11 +563,40 @@ function handleClick(e: MouseEvent): void {
   const indicator = target.closest<HTMLElement>("[data-indicator]");
   if (indicator) {
     const key = indicator.dataset.indicator;
-    if (key === "ema") state.chartEma = !state.chartEma;
-    if (key === "kdj") state.chartKdj = !state.chartKdj;
-    indicator.classList.toggle("active", key === "ema" ? state.chartEma : state.chartKdj);
-    indicator.setAttribute("aria-pressed", String(key === "ema" ? state.chartEma : state.chartKdj));
-    chart?.setOptions({ showEma: state.chartEma, showKdj: state.chartKdj });
+    if (key === "ma") state.chartPrefs.maEnabled = !state.chartPrefs.maEnabled;
+    if (key === "ema") state.chartPrefs.emaEnabled = !state.chartPrefs.emaEnabled;
+    if (key === "kdj") state.chartPrefs.kdjEnabled = !state.chartPrefs.kdjEnabled;
+    const active = key === "ma" ? state.chartPrefs.maEnabled : key === "ema" ? state.chartPrefs.emaEnabled : state.chartPrefs.kdjEnabled;
+    indicator.classList.toggle("active", active);
+    indicator.setAttribute("aria-pressed", String(active));
+    chart?.setConfig(state.chartPrefs);
+    document.querySelectorAll<HTMLElement>(".chart-footnote span:last-child").forEach((el) => {
+      el.textContent = indicatorSummary(state.chartPrefs);
+    });
+    void api.saveChartPrefs(state.chartPrefs).catch(() => toast("指标参数未能保存", "error"));
+    return;
+  }
+  const timelineMark = target.closest<HTMLElement>("[data-timeline-minute]");
+  if (timelineMark) {
+    const minute = timelineMark.dataset.timelineMinute;
+    const group = document.querySelector<HTMLElement>(`.tl-log-group[data-minute="${minute}"]`);
+    if (group) {
+      group.scrollIntoView({ block: "center", behavior: "smooth" });
+      group.classList.add("is-flash");
+      window.setTimeout(() => group.classList.remove("is-flash"), 1600);
+    }
+    return;
+  }
+  const kindBtn = target.closest<HTMLElement>("[data-pool-kind]");
+  if (kindBtn) {
+    const kind = kindBtn.dataset.poolKind as typeof state.poolKind;
+    if (kind !== state.poolKind) {
+      state.poolKind = kind;
+      state.poolFilter = "all";
+      state.poolSector = "";
+      state.poolSort = kind === "limitUp" ? { key: "streak", dir: -1 } : kind === "openLimit" ? { key: "changeRate", dir: -1 } : { key: "changeRate", dir: 1 };
+      updatePoolStage();
+    }
     return;
   }
   const sort = target.closest<HTMLElement>("[data-sort]");
@@ -509,22 +604,27 @@ function handleClick(e: MouseEvent): void {
     const key = sort.dataset.sort as typeof state.poolSort.key;
     if (state.poolSort.key === key) state.poolSort.dir = state.poolSort.dir === 1 ? -1 : 1;
     else state.poolSort = { key, dir: key === "name" ? 1 : -1 };
-    renderMain();
+    updatePoolStage();
     return;
   }
   const stockEl = target.closest<HTMLElement>("[data-stock-code]");
   if (stockEl) {
-    const code = stockEl.dataset.stockCode!;
-    const name = stockEl.dataset.stockName || "";
-    openChart(code, name);
+    openChart(stockEl.dataset.stockCode!, stockEl.dataset.stockName || "");
+    return;
+  }
+  const watchGroupBtn = target.closest<HTMLElement>("[data-watch-group]");
+  if (watchGroupBtn) {
+    state.watchGroupId = Number(watchGroupBtn.dataset.watchGroup);
+    updateWatchPanel();
     return;
   }
   const sector = target.closest<HTMLElement>("[data-sector-code]");
   if (sector) {
+    state.poolKind = "limitUp";
     state.poolSector = sector.dataset.sectorCode || "";
     state.view = "pool";
     syncHash();
-    renderMain();
+    renderMain({ animate: false });
     return;
   }
   const actionEl = target.closest<HTMLElement>("[data-action]");
@@ -551,11 +651,38 @@ function handleClick(e: MouseEvent): void {
       break;
     case "pool-filter":
       state.poolFilter = (actionEl.dataset.value as typeof state.poolFilter) || "all";
-      renderMain();
+      updatePoolStage();
       break;
     case "pool-clear-sector":
       state.poolSector = "";
-      renderMain();
+      updatePoolStage();
+      break;
+    case "batch-watch":
+      openWatchAddDialog(
+        filterStocks().map((s) => ({ code: s.code, name: s.name, market: s.market })),
+        `把当前列表（${filterStocks().length} 只）加入自选`,
+      );
+      break;
+    case "watch-add-current":
+      if (state.chartStock?.kind === "stock") {
+        openWatchAddDialog([watchStockFromSelection(state.chartStock)], "把当前股票加入自选");
+      }
+      break;
+    case "watch-toggle":
+      state.watchCollapsed = !state.watchCollapsed;
+      updateWatchPanel();
+      break;
+    case "watch-create-group":
+      openGroupDialog("create");
+      break;
+    case "watch-rename":
+      openGroupDialog("rename");
+      break;
+    case "watch-delete":
+      openGroupDelete();
+      break;
+    case "indicator-settings":
+      openIndicatorSettings();
       break;
     case "retry-day":
     case "refresh-day":
@@ -566,10 +693,7 @@ function handleClick(e: MouseEvent): void {
       chartBack();
       break;
     case "chart-retry":
-      if (state.chartStock) {
-        state.chartData = null;
-        void loadChart(state.chartStock.code);
-      }
+      if (state.chartStock) void loadChart();
       break;
     default:
       break;
@@ -610,6 +734,378 @@ function messageFrom(e: unknown, fallback: string): string {
   if (typeof e === "string") return e;
   if (e instanceof Error && e.message) return e.message;
   return fallback;
+}
+
+/* ————————————————— chart prefs / watchlist ————————————————— */
+
+async function loadChartPrefs(): Promise<void> {
+  try {
+    state.chartPrefs = await api.getChartPrefs();
+  } catch {
+    /* defaults are fine */
+  }
+  if (state.view === "chart") {
+    const tb = document.getElementById("chart-toolbar");
+    if (tb) tb.innerHTML = renderChartToolbar();
+    chart?.setConfig(state.chartPrefs);
+    const note = document.querySelector<HTMLElement>(".chart-footnote span:last-child");
+    if (note) note.textContent = indicatorSummary(state.chartPrefs);
+  }
+}
+
+async function loadWatchlist(): Promise<void> {
+  try {
+    const groups = await api.getWatchGroups();
+    state.watchGroups = groups;
+    if (!state.watchGroupId || !groups.some((g) => g.id === state.watchGroupId)) {
+      state.watchGroupId = groups[0]?.id ?? null;
+    }
+  } catch {
+    /* keep previous */
+  }
+  updateWatchPanel();
+}
+
+function updateWatchPanel(): void {
+  const old = document.querySelector<HTMLElement>(".watch-panel");
+  if (!old) return;
+  const tmp = document.createElement("div");
+  tmp.innerHTML = renderWatchPanel();
+  old.replaceWith(tmp.firstElementChild!);
+}
+
+function watchStockFromSelection(sel: ChartSelection): WatchStock {
+  const market = sel.market || (sel.code.startsWith("6") ? "1" : "0");
+  return { code: sel.code, name: sel.name, market };
+}
+
+async function openWatchAddDialog(inputStocks: WatchStock[], title: string): Promise<void> {
+  if (!inputStocks.length) {
+    toast("没有可以加入的股票");
+    return;
+  }
+  if (!state.watchGroups.length) await loadWatchlist();
+  if (!state.watchGroups.length) {
+    toast("请先新建一个自选分组", "error");
+    return;
+  }
+  closeOverlay();
+  overlayKind = "watch-add";
+  const seen = new Set<string>();
+  const stocks = inputStocks.filter((s) => {
+    if (!s.code || seen.has(s.code)) return false;
+    seen.add(s.code);
+    return true;
+  });
+  const first = state.watchGroups.find((g) => g.id === state.watchGroupId) ?? state.watchGroups[0];
+  overlayRoot.innerHTML = `<div class="overlay modal-overlay" id="watch-add-overlay">
+    <div class="overlay-panel small-modal" role="dialog" aria-label="加入自选">
+      <div class="modal-head">
+        <div><h2>加入自选</h2><p>${esc(title)} · ${stocks.length} 只</p></div>
+        <button class="modal-close" data-close-add aria-label="关闭">${icon("close", 15)}</button>
+      </div>
+      <div class="modal-body">
+        <div class="setting-label">选择分组</div>
+        <div class="group-picker">
+          ${state.watchGroups
+            .map(
+              (g) => `<label class="group-option">
+                <input type="radio" name="watch-target" value="${g.id}" ${g.id === first.id ? "checked" : ""} />
+                <span class="group-radio"></span>
+                <span class="group-option-name">${esc(g.name)}</span>
+                <span class="group-option-count">${g.stocks.length} 只</span>
+              </label>`,
+            )
+            .join("")}
+        </div>
+        <p class="modal-hint">同一分组内会自动去重；一只股票可以加入多个分组。</p>
+      </div>
+      <div class="modal-foot">
+        <button class="btn" data-close-add>取消</button>
+        <button class="btn primary" id="watch-add-confirm">加入</button>
+      </div>
+    </div>
+  </div>`;
+  const overlay = document.getElementById("watch-add-overlay")!;
+  const close = () => closeOverlay();
+  overlay.querySelectorAll<HTMLElement>("[data-close-add]").forEach((b) => b.addEventListener("click", close));
+  overlay.addEventListener("mousedown", (ev) => {
+    if (ev.target === overlay) close();
+  });
+  overlay.querySelector<HTMLElement>("#watch-add-confirm")?.addEventListener("click", async () => {
+    const selected = overlay.querySelector<HTMLInputElement>("input[name='watch-target']:checked");
+    if (!selected) {
+      toast("请选择分组");
+      return;
+    }
+    const btn = overlay.querySelector<HTMLButtonElement>("#watch-add-confirm")!;
+    btn.disabled = true;
+    btn.textContent = "加入中";
+    try {
+      const result = await api.addWatchStocks(Number(selected.value), stocks);
+      closeOverlay();
+      await loadWatchlist();
+      const skipped = result.skipped > 0 ? `，跳过 ${result.skipped} 只重复` : "";
+      toast(`已加入 ${result.added} 只${skipped}`);
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = "加入";
+      toast(messageFrom(e, "加入自选失败"), "error");
+    }
+  });
+}
+
+function openGroupDialog(mode: "create" | "rename"): void {
+  const active = state.watchGroups.find((g) => g.id === state.watchGroupId);
+  if (mode === "rename" && !active) return;
+  closeOverlay();
+  overlayKind = "group-dialog";
+  const title = mode === "create" ? "新建分组" : "重命名分组";
+  overlayRoot.innerHTML = `<div class="overlay modal-overlay" id="group-dialog-overlay">
+    <div class="overlay-panel small-modal" role="dialog" aria-label="${title}">
+      <div class="modal-head">
+        <div><h2>${title}</h2><p>名称最多 20 个字</p></div>
+        <button class="modal-close" data-close-group aria-label="关闭">${icon("close", 15)}</button>
+      </div>
+      <div class="modal-body">
+        <input class="text-input" id="group-name-input" maxlength="20" placeholder="例如：核心观察" value="${mode === "rename" && active ? esc(active.name) : ""}" />
+      </div>
+      <div class="modal-foot">
+        <button class="btn" data-close-group>取消</button>
+        <button class="btn primary" id="group-confirm">${mode === "create" ? "新建" : "保存"}</button>
+      </div>
+    </div>
+  </div>`;
+  const overlay = document.getElementById("group-dialog-overlay")!;
+  const input = overlay.querySelector<HTMLInputElement>("#group-name-input")!;
+  overlay.querySelectorAll<HTMLElement>("[data-close-group]").forEach((b) => b.addEventListener("click", closeOverlay));
+  overlay.addEventListener("mousedown", (ev) => {
+    if (ev.target === overlay) closeOverlay();
+  });
+  const submit = async () => {
+    const name = input.value.trim();
+    if (!name) {
+      toast("请输入分组名称");
+      input.focus();
+      return;
+    }
+    const btn = overlay.querySelector<HTMLButtonElement>("#group-confirm")!;
+    btn.disabled = true;
+    try {
+      if (mode === "create") {
+        const id = await api.createWatchGroup(name);
+        state.watchGroupId = id;
+      } else if (active) {
+        await api.renameWatchGroup(active.id, name);
+      }
+      closeOverlay();
+      await loadWatchlist();
+      toast(mode === "create" ? "分组已创建" : "分组已重命名");
+    } catch (e) {
+      btn.disabled = false;
+      toast(messageFrom(e, "保存失败"), "error");
+    }
+  };
+  overlay.querySelector("#group-confirm")?.addEventListener("click", submit);
+  input.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") void submit();
+  });
+  requestAnimationFrame(() => {
+    input.focus();
+    input.select();
+  });
+}
+
+function openGroupDelete(): void {
+  const active = state.watchGroups.find((g) => g.id === state.watchGroupId);
+  if (!active) return;
+  closeOverlay();
+  overlayKind = "group-delete";
+  overlayRoot.innerHTML = `<div class="overlay modal-overlay" id="group-delete-overlay">
+    <div class="overlay-panel small-modal" role="dialog" aria-label="删除分组">
+      <div class="modal-head">
+        <div><h2>删除分组</h2><p>此操作不可撤销</p></div>
+        <button class="modal-close" data-close-delete aria-label="关闭">${icon("close", 15)}</button>
+      </div>
+      <div class="modal-body">
+        <p class="confirm-text">确定删除「<b>${esc(active.name)}</b>」？分组内的 ${active.stocks.length} 只股票会从该分组移除，但不影响其他分组。</p>
+      </div>
+      <div class="modal-foot">
+        <button class="btn" data-close-delete>取消</button>
+        <button class="btn danger" id="group-delete-confirm">确认删除</button>
+      </div>
+    </div>
+  </div>`;
+  const overlay = document.getElementById("group-delete-overlay")!;
+  overlay.querySelectorAll<HTMLElement>("[data-close-delete]").forEach((b) => b.addEventListener("click", closeOverlay));
+  overlay.addEventListener("mousedown", (ev) => {
+    if (ev.target === overlay) closeOverlay();
+  });
+  overlay.querySelector("#group-delete-confirm")?.addEventListener("click", async () => {
+    try {
+      await api.deleteWatchGroup(active.id);
+      state.watchGroupId = null;
+      closeOverlay();
+      await loadWatchlist();
+      toast("分组已删除");
+    } catch (e) {
+      toast(messageFrom(e, "删除失败"), "error");
+    }
+  });
+}
+
+function openIndicatorSettings(): void {
+  const p = state.chartPrefs;
+  closeOverlay();
+  overlayKind = "indicator";
+  overlayRoot.innerHTML = `<div class="overlay modal-overlay" id="indicator-overlay">
+    <div class="overlay-panel indicator-modal" role="dialog" aria-label="指标参数">
+      <div class="modal-head">
+        <div><h2>指标参数</h2><p>MA / EMA / KDJ · 修改后立即应用到当前 K 线</p></div>
+        <button class="modal-close" data-close-indicator aria-label="关闭">${icon("close", 15)}</button>
+      </div>
+      <div class="modal-body">
+        <div class="indicator-group">
+          <label class="indicator-switch"><input type="checkbox" id="pref-ma" ${p.maEnabled ? "checked" : ""} /><span></span><b>MA</b><em>简单移动平均</em></label>
+          <input class="text-input mono" id="pref-ma-periods" value="${p.maPeriods.join(", ")}" placeholder="5, 10, 20, 60" />
+        </div>
+        <div class="indicator-group">
+          <label class="indicator-switch"><input type="checkbox" id="pref-ema" ${p.emaEnabled ? "checked" : ""} /><span></span><b>EMA</b><em>指数移动平均</em></label>
+          <input class="text-input mono" id="pref-ema-periods" value="${p.emaPeriods.join(", ")}" placeholder="5, 10, 20, 60" />
+        </div>
+        <div class="indicator-group kdj-row">
+          <label class="indicator-switch"><input type="checkbox" id="pref-kdj" ${p.kdjEnabled ? "checked" : ""} /><span></span><b>KDJ</b><em>随机指标</em></label>
+          <div class="kdj-inputs">
+            <label>N <input class="text-input mono" id="pref-kdj-n" type="number" min="2" max="90" value="${p.kdjN}" /></label>
+            <label>K <input class="text-input mono" id="pref-kdj-k" type="number" min="1" max="20" value="${p.kdjK}" /></label>
+            <label>D <input class="text-input mono" id="pref-kdj-d" type="number" min="1" max="20" value="${p.kdjD}" /></label>
+          </div>
+        </div>
+        <p class="modal-hint">周期写为逗号分隔数字，例如 5, 10, 20, 60；最多 4 条。参数保存在本地数据库。</p>
+      </div>
+      <div class="modal-foot">
+        <button class="btn" data-close-indicator>取消</button>
+        <button class="btn primary" id="indicator-apply">应用</button>
+      </div>
+    </div>
+  </div>`;
+  const overlay = document.getElementById("indicator-overlay")!;
+  overlay.querySelectorAll<HTMLElement>("[data-close-indicator]").forEach((b) => b.addEventListener("click", closeOverlay));
+  overlay.addEventListener("mousedown", (ev) => {
+    if (ev.target === overlay) closeOverlay();
+  });
+  overlay.querySelector("#indicator-apply")?.addEventListener("click", async () => {
+    const parsePeriods = (id: string) => {
+      const el = overlay.querySelector<HTMLInputElement>(id)!;
+      const values = el.value
+        .split(/[,\s，]+/)
+        .map((v) => Number(v))
+        .filter((v) => Number.isFinite(v) && v >= 2 && v <= 250);
+      return [...new Set(values)].slice(0, 4);
+    };
+    const maPeriods = parsePeriods("#pref-ma-periods");
+    const emaPeriods = parsePeriods("#pref-ema-periods");
+    const maEnabled = overlay.querySelector<HTMLInputElement>("#pref-ma")!.checked;
+    const emaEnabled = overlay.querySelector<HTMLInputElement>("#pref-ema")!.checked;
+    if (maEnabled && !maPeriods.length) return toast("MA 周期至少填写一个 2–250 的数字", "error");
+    if (emaEnabled && !emaPeriods.length) return toast("EMA 周期至少填写一个 2–250 的数字", "error");
+    const kdjN = Number(overlay.querySelector<HTMLInputElement>("#pref-kdj-n")!.value);
+    const kdjK = Number(overlay.querySelector<HTMLInputElement>("#pref-kdj-k")!.value);
+    const kdjD = Number(overlay.querySelector<HTMLInputElement>("#pref-kdj-d")!.value);
+    const next: ChartPrefs = {
+      maEnabled,
+      maPeriods: maPeriods.length ? maPeriods : p.maPeriods,
+      emaEnabled,
+      emaPeriods: emaPeriods.length ? emaPeriods : p.emaPeriods,
+      kdjEnabled: overlay.querySelector<HTMLInputElement>("#pref-kdj")!.checked,
+      kdjN: Number.isFinite(kdjN) ? Math.max(2, Math.min(90, Math.round(kdjN))) : 9,
+      kdjK: Number.isFinite(kdjK) ? Math.max(1, Math.min(20, Math.round(kdjK))) : 3,
+      kdjD: Number.isFinite(kdjD) ? Math.max(1, Math.min(20, Math.round(kdjD))) : 3,
+    };
+    state.chartPrefs = next;
+    chart?.setConfig(next);
+    const tb = document.getElementById("chart-toolbar");
+    if (tb) tb.innerHTML = renderChartToolbar();
+    const note = document.querySelector<HTMLElement>(".chart-footnote span:last-child");
+    if (note) note.textContent = indicatorSummary(next);
+    closeOverlay();
+    try {
+      await api.saveChartPrefs(next);
+      toast("指标参数已应用");
+    } catch (e) {
+      toast(messageFrom(e, "指标参数保存失败"), "error");
+    }
+  });
+}
+
+function handleContextMenu(e: MouseEvent): void {
+  if (overlayKind) return;
+  const el = (e.target as HTMLElement).closest<HTMLElement>("[data-stock-code]");
+  if (!el) return;
+  e.preventDefault();
+  const code = el.dataset.stockCode!;
+  const name = el.dataset.stockName || code;
+  const currentGroupId = Number(el.dataset.watchGroup || state.watchGroupId || 0);
+  const stock = watchStockFromSelection({ code, name, market: "", kind: "stock" });
+  closeOverlay();
+  overlayKind = "context";
+  const groups = state.watchGroups
+    .map((g) => {
+      const member = g.stocks.some((s) => s.code === code);
+      return `<button class="context-item ${member ? "is-member" : ""}" data-context-group="${g.id}" ${member ? "disabled" : ""}>
+        <span>${esc(g.name)}</span><em>${member ? "已在" : "加入"}</em>
+      </button>`;
+    })
+    .join("");
+  const inActive = state.watchGroups.find((g) => g.id === currentGroupId)?.stocks.some((s) => s.code === code);
+  overlayRoot.innerHTML = `<div class="context-layer" id="context-layer">
+    <div class="context-menu" style="left:0;top:0">
+      <div class="context-head"><b>${esc(name)}</b><span>${code}</span></div>
+      <div class="context-label">分配到分组</div>
+      <div class="context-groups">${groups || `<div class="context-empty">还没有分组</div>`}</div>
+      <div class="context-sep"></div>
+      <button class="context-item" data-context-create>${icon("plus", 12)} 新建分组</button>
+      ${inActive && currentGroupId ? `<button class="context-item danger" data-context-remove="${currentGroupId}">从当前分组移除</button>` : ""}
+    </div>
+  </div>`;
+  const layer = document.getElementById("context-layer")!;
+  const menu = layer.querySelector<HTMLElement>(".context-menu")!;
+  const w = menu.offsetWidth || 210;
+  const h = menu.offsetHeight || 250;
+  menu.style.left = `${Math.max(8, Math.min(window.innerWidth - w - 8, e.clientX))}px`;
+  menu.style.top = `${Math.max(8, Math.min(window.innerHeight - h - 8, e.clientY))}px`;
+  layer.addEventListener("mousedown", (ev) => {
+    if (ev.target === layer) closeOverlay();
+  });
+  layer.querySelectorAll<HTMLElement>("[data-context-group]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (btn.hasAttribute("disabled")) return;
+      try {
+        const groupId = Number(btn.dataset.contextGroup);
+        const result = await api.addWatchStocks(groupId, [stock]);
+        closeOverlay();
+        await loadWatchlist();
+        toast(result.added ? "已加入分组" : "该分组已包含此股票");
+      } catch (err) {
+        toast(messageFrom(err, "操作失败"), "error");
+      }
+    });
+  });
+  layer.querySelector("[data-context-create]")?.addEventListener("click", () => {
+    closeOverlay();
+    openGroupDialog("create");
+  });
+  layer.querySelector<HTMLElement>("[data-context-remove]")?.addEventListener("click", async (ev) => {
+    const groupId = Number((ev.currentTarget as HTMLElement).dataset.contextRemove);
+    try {
+      await api.removeWatchStock(groupId, code);
+      closeOverlay();
+      await loadWatchlist();
+      toast("已从分组移除");
+    } catch (err) {
+      toast(messageFrom(err, "移除失败"), "error");
+    }
+  });
 }
 
 /* ————————————————— overlays ————————————————— */

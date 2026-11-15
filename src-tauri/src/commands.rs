@@ -140,8 +140,12 @@ pub async fn get_kline(
         return Err("股票代码应为 6 位数字".into());
     }
     let period = match period.as_str() {
+        "15m" => "15m",
+        "30m" => "30m",
+        "60m" => "60m",
         "week" => "week",
         "month" => "month",
+        "year" => "year",
         _ => "day",
     }
     .to_string();
@@ -223,6 +227,83 @@ fn read_indices(state: &AppState) -> Result<Vec<IndexQuote>, String> {
         });
     }
     Ok(out)
+}
+
+#[tauri::command]
+pub async fn get_index_kline(
+    state: State<'_, AppState>,
+    secid: String,
+    name: String,
+    period: String,
+    refresh: bool,
+) -> Result<KlinePayload, String> {
+    let secid = secid.trim().to_string();
+    if !matches!(secid.as_str(), "1.000001" | "0.399001" | "0.399006") {
+        return Err("不支持的指数".into());
+    }
+    let period = match period.as_str() {
+        "15m" => "15m",
+        "30m" => "30m",
+        "60m" => "60m",
+        "week" => "week",
+        "month" => "month",
+        "year" => "year",
+        _ => "day",
+    }
+    .to_string();
+    let display_name = if name.trim().is_empty() {
+        index_name(&secid).to_string()
+    } else {
+        name.trim().to_string()
+    };
+    let (cached, _cached_name, _) = {
+        let conn = state_conn(&state)?;
+        let loaded = db::load_klines(&conn, &secid, &period).map_err(|e| err(e))?;
+        (loaded.0, loaded.1, loaded.2)
+    };
+    if !refresh && !cached.is_empty() {
+        return Ok(KlinePayload {
+            code: secid,
+            name: display_name,
+            period,
+            latest_date: cached.last().map(|c| c.date.clone()).unwrap_or_default(),
+            candles: cached,
+            source: "cache".into(),
+            warning: None,
+        });
+    }
+    match source::fetch_index_kline(&state.client, &secid, &period).await {
+        Ok((_name, candles)) => {
+            let mut conn = state_conn(&state)?;
+            if let Err(e) = db::save_klines(&mut conn, &secid, &period, "", &candles) {
+                eprintln!("save index kline failed: {e:#}");
+            }
+            drop(conn);
+            Ok(KlinePayload {
+                code: secid,
+                name: display_name,
+                period,
+                latest_date: candles.last().map(|c| c.date.clone()).unwrap_or_default(),
+                candles,
+                source: "network".into(),
+                warning: None,
+            })
+        }
+        Err(e) => {
+            if !cached.is_empty() {
+                return Ok(KlinePayload {
+                    code: secid,
+                    name: display_name,
+                    period,
+                    latest_date: cached.last().map(|c| c.date.clone()).unwrap_or_default(),
+                    candles: cached,
+                    source: "cache".into(),
+                    warning: Some(format!("指数行情更新失败，展示本地缓存 · {e}")),
+                });
+            }
+            Err(format!("无法获取指数K线 · {e}"))
+        }
+    }
 }
 
 #[tauri::command]
@@ -323,8 +404,128 @@ pub async fn clear_cache(state: State<'_, AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub async fn get_watch_groups(state: State<'_, AppState>) -> Result<Vec<WatchGroup>, String> {
+    let conn = state_conn(&state)?;
+    db::list_watch_groups(&conn).map_err(|e| err(e))
+}
+
+#[tauri::command]
+pub async fn create_watch_group(state: State<'_, AppState>, name: String) -> Result<i64, String> {
+    let conn = state_conn(&state)?;
+    db::create_watch_group(&conn, &name).map_err(|e| err(e))
+}
+
+#[tauri::command]
+pub async fn rename_watch_group(state: State<'_, AppState>, id: i64, name: String) -> Result<(), String> {
+    let conn = state_conn(&state)?;
+    db::rename_watch_group(&conn, id, &name).map_err(|e| err(e))
+}
+
+#[tauri::command]
+pub async fn delete_watch_group(state: State<'_, AppState>, id: i64) -> Result<(), String> {
+    let conn = state_conn(&state)?;
+    db::delete_watch_group(&conn, id).map_err(|e| err(e))
+}
+
+#[tauri::command]
+pub async fn add_watch_stocks(
+    state: State<'_, AppState>,
+    group_id: i64,
+    stocks: Vec<WatchStock>,
+) -> Result<WatchAddResult, String> {
+    let mut conn = state_conn(&state)?;
+    db::add_watch_stocks(&mut conn, group_id, &stocks).map_err(|e| err(e))
+}
+
+#[tauri::command]
+pub async fn remove_watch_stock(
+    state: State<'_, AppState>,
+    group_id: i64,
+    code: String,
+) -> Result<(), String> {
+    let conn = state_conn(&state)?;
+    db::remove_watch_stock(&conn, group_id, &code).map_err(|e| err(e))
+}
+
+fn split_periods(text: &str, defaults: Vec<i64>) -> Vec<i64> {
+    let mut out: Vec<i64> = text
+        .split(',')
+        .filter_map(|s| s.trim().parse::<i64>().ok())
+        .filter(|v| *v >= 2 && *v <= 250)
+        .collect();
+    out.truncate(6);
+    if out.is_empty() {
+        defaults
+    } else {
+        out
+    }
+}
+
+fn setting_bool(conn: &rusqlite::Connection, key: &str, default: bool) -> bool {
+    db::get_setting(conn, key)
+        .ok()
+        .flatten()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(default)
+}
+
+fn setting_i64(conn: &rusqlite::Connection, key: &str, default: i64) -> i64 {
+    db::get_setting(conn, key)
+        .ok()
+        .flatten()
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(default)
+}
+
+#[tauri::command]
+pub async fn get_chart_prefs(state: State<'_, AppState>) -> Result<ChartPrefs, String> {
+    let conn = state_conn(&state)?;
+    let def = ChartPrefs::default();
+    let ma_periods = db::get_setting(&conn, "chart.ma_periods")
+        .map_err(|e| err(e))?
+        .map(|v| split_periods(&v, def.ma_periods.clone()))
+        .unwrap_or(def.ma_periods.clone());
+    let ema_periods = db::get_setting(&conn, "chart.ema_periods")
+        .map_err(|e| err(e))?
+        .map(|v| split_periods(&v, def.ema_periods.clone()))
+        .unwrap_or(def.ema_periods.clone());
+    Ok(ChartPrefs {
+        ma_enabled: setting_bool(&conn, "chart.ma_enabled", def.ma_enabled),
+        ma_periods,
+        ema_enabled: setting_bool(&conn, "chart.ema_enabled", def.ema_enabled),
+        ema_periods,
+        kdj_enabled: setting_bool(&conn, "chart.kdj_enabled", def.kdj_enabled),
+        kdj_n: setting_i64(&conn, "chart.kdj_n", def.kdj_n).clamp(2, 90),
+        kdj_k: setting_i64(&conn, "chart.kdj_k", def.kdj_k).clamp(1, 20),
+        kdj_d: setting_i64(&conn, "chart.kdj_d", def.kdj_d).clamp(1, 20),
+    })
+}
+
+#[tauri::command]
+pub async fn save_chart_prefs(state: State<'_, AppState>, prefs: ChartPrefs) -> Result<(), String> {
+    let conn = state_conn(&state)?;
+    let mut ma = prefs.ma_periods.into_iter().filter(|v| *v >= 2 && *v <= 250).collect::<Vec<_>>();
+    let mut ema = prefs.ema_periods.into_iter().filter(|v| *v >= 2 && *v <= 250).collect::<Vec<_>>();
+    ma.truncate(6);
+    ema.truncate(6);
+    if ma.is_empty() || ema.is_empty() {
+        return Err("指标周期不能为空".into());
+    }
+    db::set_setting(&conn, "chart.ma_enabled", if prefs.ma_enabled { "1" } else { "0" }).map_err(|e| err(e))?;
+    db::set_setting(&conn, "chart.ma_periods", &ma.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",")).map_err(|e| err(e))?;
+    db::set_setting(&conn, "chart.ema_enabled", if prefs.ema_enabled { "1" } else { "0" }).map_err(|e| err(e))?;
+    db::set_setting(&conn, "chart.ema_periods", &ema.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(",")).map_err(|e| err(e))?;
+    db::set_setting(&conn, "chart.kdj_enabled", if prefs.kdj_enabled { "1" } else { "0" }).map_err(|e| err(e))?;
+    db::set_setting(&conn, "chart.kdj_n", &prefs.kdj_n.clamp(2, 90).to_string()).map_err(|e| err(e))?;
+    db::set_setting(&conn, "chart.kdj_k", &prefs.kdj_k.clamp(1, 20).to_string()).map_err(|e| err(e))?;
+    db::set_setting(&conn, "chart.kdj_d", &prefs.kdj_d.clamp(1, 20).to_string()).map_err(|e| err(e))?;
+    Ok(())
+}
+
+#[tauri::command]
 pub fn window_control(window: tauri::WebviewWindow, action: String) -> Result<(), String> {
     match action.as_str() {
+        "drag" => window.start_dragging(),
         "minimize" => window.minimize(),
         "maximize" => {
             let maximized = window.is_maximized().unwrap_or(false);

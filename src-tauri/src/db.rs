@@ -46,7 +46,63 @@ pub fn init(path: &Path) -> Result<()> {
             early_seal INTEGER NOT NULL DEFAULT 0,
             avg_seal REAL NOT NULL DEFAULT 0,
             avg_success REAL NOT NULL DEFAULT 0,
+            open_limit INTEGER NOT NULL DEFAULT 0,
+            limit_down INTEGER NOT NULL DEFAULT 0,
             source_total INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS pool_aux (
+            date TEXT NOT NULL,
+            pool TEXT NOT NULL,
+            code TEXT NOT NULL,
+            name TEXT NOT NULL,
+            price REAL NOT NULL DEFAULT 0,
+            change_rate REAL NOT NULL DEFAULT 0,
+            turnover_rate REAL NOT NULL DEFAULT 0,
+            amount REAL NOT NULL DEFAULT 0,
+            seal_amount REAL NOT NULL DEFAULT 0,
+            first_seal INTEGER NOT NULL DEFAULT 0,
+            last_seal INTEGER NOT NULL DEFAULT 0,
+            open_num INTEGER NOT NULL DEFAULT 0,
+            limit_type TEXT NOT NULL DEFAULT '',
+            reason TEXT NOT NULL DEFAULT '',
+            market TEXT NOT NULL DEFAULT '',
+            market_id INTEGER NOT NULL DEFAULT 0,
+            success_rate REAL NOT NULL DEFAULT 0,
+            float_cap REAL NOT NULL DEFAULT 0,
+            is_new INTEGER NOT NULL DEFAULT 0,
+            is_again_limit INTEGER NOT NULL DEFAULT 0,
+            high_days TEXT NOT NULL DEFAULT '',
+            board INTEGER NOT NULL DEFAULT 0,
+            days INTEGER NOT NULL DEFAULT 0,
+            streak INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (date, pool, code)
+        );
+
+        CREATE TABLE IF NOT EXISTS pool_aux_tick (
+            date TEXT NOT NULL,
+            pool TEXT NOT NULL,
+            code TEXT NOT NULL,
+            seq INTEGER NOT NULL,
+            pct REAL NOT NULL,
+            PRIMARY KEY (date, pool, code, seq)
+        );
+
+        CREATE TABLE IF NOT EXISTS watch_group (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS watch_stock (
+            group_id INTEGER NOT NULL,
+            code TEXT NOT NULL,
+            name TEXT NOT NULL,
+            market TEXT NOT NULL DEFAULT '',
+            added_at INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (group_id, code),
+            FOREIGN KEY (group_id) REFERENCES watch_group(id) ON DELETE CASCADE
         );
 
         CREATE TABLE IF NOT EXISTS limit_up (
@@ -156,6 +212,41 @@ pub fn init(path: &Path) -> Result<()> {
         "INSERT INTO settings(key, value) VALUES ('theme', 'dark') ON CONFLICT(key) DO NOTHING",
         [],
     )?;
+    migrate(&conn)?;
+    ensure_default_watch_group(&conn)?;
+    Ok(())
+}
+
+fn has_column(conn: &Connection, table: &str, column: &str) -> bool {
+    let sql = format!("PRAGMA table_info({})", table);
+    let Ok(mut st) = conn.prepare(&sql) else { return false };
+    let Ok(rows) = st.query_map([], |r| r.get::<_, String>(1)) else { return false };
+    for row in rows.flatten() {
+        if row == column {
+            return true;
+        }
+    }
+    false
+}
+
+fn migrate(conn: &Connection) -> Result<()> {
+    if !has_column(conn, "day_snapshot", "open_limit") {
+        conn.execute("ALTER TABLE day_snapshot ADD COLUMN open_limit INTEGER NOT NULL DEFAULT 0", [])?;
+    }
+    if !has_column(conn, "day_snapshot", "limit_down") {
+        conn.execute("ALTER TABLE day_snapshot ADD COLUMN limit_down INTEGER NOT NULL DEFAULT 0", [])?;
+    }
+    Ok(())
+}
+
+fn ensure_default_watch_group(conn: &Connection) -> Result<()> {
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM watch_group", [], |r| r.get(0))?;
+    if count == 0 {
+        conn.execute(
+            "INSERT INTO watch_group(name, sort_order, created_at) VALUES ('我的自选', 0, ?1)",
+            params![chrono::Utc::now().timestamp()],
+        )?;
+    }
     Ok(())
 }
 
@@ -167,12 +258,14 @@ pub fn save_day(conn: &mut Connection, day: &DayPayload) -> Result<()> {
     tx.execute("DELETE FROM limit_up_tick WHERE date = ?1", params![date])?;
     tx.execute("DELETE FROM sectors WHERE date = ?1", params![date])?;
     tx.execute("DELETE FROM sector_members WHERE date = ?1", params![date])?;
+    tx.execute("DELETE FROM pool_aux WHERE date = ?1", params![date])?;
+    tx.execute("DELETE FROM pool_aux_tick WHERE date = ?1", params![date])?;
 
     let s = &day.stats;
     tx.execute(
         r#"INSERT INTO day_snapshot
-        (date, fetched_at, total, consecutive, first_board, max_streak, one_word, early_seal, avg_seal, avg_success, source_total)
-        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)"#,
+        (date, fetched_at, total, consecutive, first_board, max_streak, one_word, early_seal, avg_seal, avg_success, open_limit, limit_down, source_total)
+        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)"#,
         params![
             date,
             day.fetched_at,
@@ -184,6 +277,8 @@ pub fn save_day(conn: &mut Connection, day: &DayPayload) -> Result<()> {
             s.early_seal,
             s.avg_seal,
             s.avg_success,
+            s.open_limit,
+            s.limit_down,
             day.stocks.len() as i64
         ],
     )?;
@@ -261,6 +356,50 @@ pub fn save_day(conn: &mut Connection, day: &DayPayload) -> Result<()> {
         }
     }
 
+    for (pool, list) in [("open_limit", &day.open_limit), ("limit_down", &day.limit_down)] {
+        let mut st = tx.prepare(
+            r#"INSERT INTO pool_aux
+            (date, pool, code, name, price, change_rate, turnover_rate, amount, seal_amount,
+             first_seal, last_seal, open_num, limit_type, reason, market, market_id, success_rate,
+             float_cap, is_new, is_again_limit, high_days, board, days, streak)
+            VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24)"#,
+        )?;
+        let mut tick = tx.prepare(
+            "INSERT OR REPLACE INTO pool_aux_tick(date, pool, code, seq, pct) VALUES (?1,?2,?3,?4,?5)",
+        )?;
+        for stk in list {
+            st.execute(params![
+                date,
+                pool,
+                stk.code,
+                stk.name,
+                stk.price,
+                stk.change_rate,
+                stk.turnover_rate,
+                stk.amount,
+                stk.seal_amount,
+                stk.first_seal,
+                stk.last_seal,
+                stk.open_num,
+                stk.limit_type,
+                stk.reason,
+                stk.market,
+                stk.market_id,
+                stk.success_rate,
+                stk.float_cap,
+                if stk.is_new { 1 } else { 0 },
+                if stk.is_again_limit { 1 } else { 0 },
+                stk.high_days,
+                stk.board,
+                stk.days,
+                stk.streak,
+            ])?;
+            for (i, v) in stk.spark.iter().enumerate() {
+                tick.execute(params![date, pool, stk.code, i as i64, v])?;
+            }
+        }
+    }
+
     tx.execute(
         "INSERT INTO trade_days(date, is_trade) VALUES (?1, 1) ON CONFLICT(date) DO UPDATE SET is_trade=1",
         params![date],
@@ -274,14 +413,14 @@ pub fn save_day(conn: &mut Connection, day: &DayPayload) -> Result<()> {
 }
 
 pub fn load_day(conn: &Connection, date: &str) -> Result<Option<DayPayload>> {
-    let snap: Option<(i64, i64, i64, i64, i64, i64, i64, f64, f64)> = conn
+    let snap: Option<(i64, i64, i64, i64, i64, i64, i64, f64, f64, i64, i64)> = conn
         .query_row(
-            "SELECT fetched_at,total,consecutive,first_board,max_streak,one_word,early_seal,avg_seal,avg_success FROM day_snapshot WHERE date=?1",
+            "SELECT fetched_at,total,consecutive,first_board,max_streak,one_word,early_seal,avg_seal,avg_success,open_limit,limit_down FROM day_snapshot WHERE date=?1",
             params![date],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?)),
         )
         .optional()?;
-    let Some((fetched_at, total, consecutive, first_board, max_streak, one_word, early_seal, avg_seal, avg_success)) = snap else {
+    let Some((fetched_at, total, consecutive, first_board, max_streak, one_word, early_seal, avg_seal, avg_success, open_limit_count, limit_down_count)) = snap else {
         return Ok(None);
     };
 
@@ -393,6 +532,9 @@ pub fn load_day(conn: &Connection, date: &str) -> Result<Option<DayPayload>> {
         }
     }
 
+    let open_limit = load_aux_stocks(conn, date, "open_limit")?;
+    let limit_down = load_aux_stocks(conn, date, "limit_down")?;
+
     Ok(Some(DayPayload {
         date: date.to_string(),
         weekday: weekday_cn(date),
@@ -405,13 +547,79 @@ pub fn load_day(conn: &Connection, date: &str) -> Result<Option<DayPayload>> {
             early_seal,
             avg_seal,
             avg_success,
+            open_limit: open_limit_count,
+            limit_down: limit_down_count,
         },
         stocks,
+        open_limit,
+        limit_down,
         sectors: sector_rows,
         fetched_at,
         source: "cache".into(),
         warning: None,
     }))
+}
+
+fn load_aux_stocks(conn: &Connection, date: &str, pool: &str) -> Result<Vec<Stock>> {
+    let mut sparks: HashMap<String, Vec<f64>> = HashMap::new();
+    {
+        let mut st = conn.prepare(
+            "SELECT code, pct FROM pool_aux_tick WHERE date=?1 AND pool=?2 ORDER BY code, seq ASC",
+        )?;
+        let iter = st.query_map(params![date, pool], |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?)))?;
+        for row in iter {
+            let (code, pct) = row?;
+            sparks.entry(code).or_default().push(pct);
+        }
+    }
+    let mut out = Vec::new();
+    {
+        let mut st = conn.prepare(
+            r#"SELECT code,name,board,days,streak,high_days,price,change_rate,turnover_rate,amount,
+               seal_amount,first_seal,last_seal,open_num,limit_type,reason,market,market_id,
+               success_rate,float_cap,is_new,is_again_limit
+               FROM pool_aux WHERE date=?1 AND pool=?2
+               ORDER BY change_rate DESC, code ASC"#,
+        )?;
+        let iter = st.query_map(params![date, pool], |r| {
+            let reason: String = r.get(15)?;
+            Ok(Stock {
+                code: r.get(0)?,
+                name: r.get(1)?,
+                board: r.get(2)?,
+                days: r.get(3)?,
+                streak: r.get(4)?,
+                high_days: r.get(5)?,
+                price: r.get(6)?,
+                change_rate: r.get(7)?,
+                turnover_rate: r.get(8)?,
+                amount: r.get(9)?,
+                seal_amount: r.get(10)?,
+                first_seal: r.get(11)?,
+                last_seal: r.get(12)?,
+                open_num: r.get(13)?,
+                limit_type: r.get(14)?,
+                reason_tags: split_reason(&reason),
+                reason,
+                market: r.get(16)?,
+                market_id: r.get(17)?,
+                success_rate: r.get(18)?,
+                float_cap: r.get(19)?,
+                is_new: r.get::<_, i64>(20)? != 0,
+                is_again_limit: r.get::<_, i64>(21)? != 0,
+                spark: Vec::new(),
+                sectors: Vec::new(),
+                primary_sector: None,
+            })
+        })?;
+        for row in iter {
+            out.push(row?);
+        }
+    }
+    for stk in &mut out {
+        stk.spark = sparks.remove(&stk.code).unwrap_or_default();
+    }
+    Ok(out)
 }
 
 pub fn save_calendar(conn: &mut Connection, today: &str, dates: &[String], today_is_trade: bool) -> Result<()> {
@@ -681,11 +889,138 @@ pub fn data_info(conn: &Connection, data_dir: &Path, db_path: &Path) -> Result<D
     })
 }
 
+pub fn list_watch_groups(conn: &Connection) -> Result<Vec<WatchGroup>> {
+    let mut groups = Vec::new();
+    {
+        let mut st = conn.prepare("SELECT id,name FROM watch_group ORDER BY sort_order ASC, id ASC")?;
+        let iter = st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+        for row in iter {
+            let (id, name) = row?;
+            groups.push(WatchGroup { id, name, stocks: Vec::new() });
+        }
+    }
+    {
+        let mut st = conn.prepare(
+            "SELECT group_id,code,name,market FROM watch_stock ORDER BY added_at DESC, code ASC",
+        )?;
+        let iter = st.query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                WatchStock {
+                    code: r.get(1)?,
+                    name: r.get(2)?,
+                    market: r.get(3)?,
+                },
+            ))
+        })?;
+        for row in iter {
+            let (gid, stock) = row?;
+            if let Some(g) = groups.iter_mut().find(|g| g.id == gid) {
+                g.stocks.push(stock);
+            }
+        }
+    }
+    Ok(groups)
+}
+
+pub fn create_watch_group(conn: &Connection, name: &str) -> Result<i64> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(anyhow::anyhow!("分组名称不能为空"));
+    }
+    if name.chars().count() > 20 {
+        return Err(anyhow::anyhow!("分组名称不能超过 20 个字"));
+    }
+    let exists: i64 = conn.query_row("SELECT COUNT(*) FROM watch_group WHERE name=?1", params![name], |r| r.get(0))?;
+    if exists > 0 {
+        return Err(anyhow::anyhow!("分组名称已存在"));
+    }
+    let order: i64 = conn.query_row("SELECT COALESCE(MAX(sort_order),0)+1 FROM watch_group", [], |r| r.get(0)).unwrap_or(1);
+    conn.execute(
+        "INSERT INTO watch_group(name,sort_order,created_at) VALUES (?1,?2,?3)",
+        params![name, order, chrono::Utc::now().timestamp()],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn rename_watch_group(conn: &Connection, id: i64, name: &str) -> Result<()> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(anyhow::anyhow!("分组名称不能为空"));
+    }
+    if name.chars().count() > 20 {
+        return Err(anyhow::anyhow!("分组名称不能超过 20 个字"));
+    }
+    let exists: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM watch_group WHERE name=?1 AND id<>?2",
+        params![name, id],
+        |r| r.get(0),
+    )?;
+    if exists > 0 {
+        return Err(anyhow::anyhow!("分组名称已存在"));
+    }
+    let n = conn.execute("UPDATE watch_group SET name=?1 WHERE id=?2", params![name, id])?;
+    if n == 0 {
+        return Err(anyhow::anyhow!("分组不存在"));
+    }
+    Ok(())
+}
+
+pub fn delete_watch_group(conn: &Connection, id: i64) -> Result<()> {
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM watch_group", [], |r| r.get(0))?;
+    if count <= 1 {
+        return Err(anyhow::anyhow!("至少保留一个分组"));
+    }
+    conn.execute("DELETE FROM watch_group WHERE id=?1", params![id])?;
+    Ok(())
+}
+
+pub fn add_watch_stocks(conn: &mut Connection, group_id: i64, stocks: &[WatchStock]) -> Result<WatchAddResult> {
+    let exists: i64 = conn.query_row("SELECT COUNT(*) FROM watch_group WHERE id=?1", params![group_id], |r| r.get(0))?;
+    if exists == 0 {
+        return Err(anyhow::anyhow!("分组不存在"));
+    }
+    let tx = conn.transaction()?;
+    let mut added = 0;
+    let mut skipped = 0;
+    {
+        let mut st = tx.prepare(
+            "INSERT OR IGNORE INTO watch_stock(group_id,code,name,market,added_at) VALUES (?1,?2,?3,?4,?5)",
+        )?;
+        let now = chrono::Utc::now().timestamp();
+        for s in stocks {
+            let code = s.code.trim();
+            if code.is_empty() {
+                skipped += 1;
+                continue;
+            }
+            let n = st.execute(params![group_id, code, s.name.trim(), s.market, now])?;
+            if n > 0 {
+                added += 1;
+            } else {
+                skipped += 1;
+            }
+        }
+    }
+    tx.commit()?;
+    Ok(WatchAddResult { added, skipped })
+}
+
+pub fn remove_watch_stock(conn: &Connection, group_id: i64, code: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM watch_stock WHERE group_id=?1 AND code=?2",
+        params![group_id, code],
+    )?;
+    Ok(())
+}
+
 pub fn clear_cache(conn: &mut Connection) -> Result<()> {
     let tx = conn.transaction()?;
     for table in [
         "limit_up_tick",
         "limit_up",
+        "pool_aux_tick",
+        "pool_aux",
         "sector_members",
         "sectors",
         "day_snapshot",

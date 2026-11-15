@@ -115,17 +115,17 @@ struct BlockInfo {
     streaks: Vec<(String, i64)>,
 }
 
-async fn fetch_pool(client: &Client, date: &str) -> Result<Vec<Value>> {
+async fn fetch_pool(client: &Client, date: &str, path: &str, order_field: &str) -> Result<Vec<Value>> {
     let fields = "199112,10,9001,330323,330324,330325,9002,330329,133971,133970,1968584,3475914,9003,9004";
     let mut all = Vec::new();
     let mut page = 1;
     loop {
         let url = format!(
-            "https://data.10jqka.com.cn/dataapi/limit_up/limit_up_pool?page={page}&limit=100&field={fields}&filter=HS,GEM2STAR&date={date}&order_field=330324&order_type=0"
+            "https://data.10jqka.com.cn/dataapi/limit_up/{path}?page={page}&limit=100&field={fields}&filter=HS,GEM2STAR&date={date}&order_field={order_field}&order_type=0"
         );
         let json = get_json(client, &url, THS_REFERER).await?;
         if int(&json["status_code"]) != 0 {
-            return Err(anyhow!("涨停池接口返回异常"));
+            return Err(anyhow!("行情池接口返回异常"));
         }
         let info = json["data"]["info"].as_array().cloned().unwrap_or_default();
         let total = int(&json["data"]["page"]["total"]);
@@ -191,11 +191,29 @@ pub async fn fetch_day(client: &Client, date: &str) -> Result<(DayPayload, Optio
     if !is_date(date) {
         return Err(anyhow!("日期格式应为 YYYYMMDD"));
     }
-    let pool = fetch_pool(client, date).await?;
+    let pool = fetch_pool(client, date, "limit_up_pool", "330324").await?;
+    let mut warnings: Vec<String> = Vec::new();
+    let open_pool = match fetch_pool(client, date, "open_limit_pool", "199112").await {
+        Ok(v) => v,
+        Err(e) => {
+            warnings.push(format!("炸板池暂不可用 · {e}"));
+            Vec::new()
+        }
+    };
+    let down_pool = match fetch_pool(client, date, "lower_limit_pool", "199112").await {
+        Ok(v) => v,
+        Err(e) => {
+            warnings.push(format!("跌停池暂不可用 · {e}"));
+            Vec::new()
+        }
+    };
     let (blocks, block_warning) = match fetch_blocks(client, date).await {
         Ok(b) => (b, None),
         Err(e) => (Vec::new(), Some(format!("板块数据暂不可用 · {e}"))),
     };
+    if let Some(w) = block_warning {
+        warnings.push(w);
+    }
 
     let mut streak_map: HashMap<String, i64> = HashMap::new();
     let mut sector_map: HashMap<String, Vec<String>> = HashMap::new();
@@ -300,6 +318,21 @@ pub async fn fetch_day(client: &Client, date: &str) -> Result<(DayPayload, Optio
             .then(a.first_seal.cmp(&b.first_seal))
     });
 
+    let mut open_limit: Vec<Stock> = open_pool.iter().filter_map(|v| aux_stock(v)).collect();
+    open_limit.sort_by(|a, b| {
+        b.change_rate
+            .partial_cmp(&a.change_rate)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.last_seal.cmp(&b.last_seal))
+    });
+    let mut limit_down: Vec<Stock> = down_pool.iter().filter_map(|v| aux_stock(v)).collect();
+    limit_down.sort_by(|a, b| {
+        a.change_rate
+            .partial_cmp(&b.change_rate)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.code.cmp(&b.code))
+    });
+
     let total = stocks.len() as i64;
     let consecutive = stocks.iter().filter(|s| s.streak >= 2).count() as i64;
     let first_board = stocks.iter().filter(|s| s.streak <= 1).count() as i64;
@@ -320,6 +353,7 @@ pub async fn fetch_day(client: &Client, date: &str) -> Result<(DayPayload, Optio
         0.0
     };
 
+    let warning = if warnings.is_empty() { None } else { Some(warnings.join("；")) };
     let payload = DayPayload {
         date: date.to_string(),
         weekday: db::weekday_cn(date),
@@ -332,14 +366,58 @@ pub async fn fetch_day(client: &Client, date: &str) -> Result<(DayPayload, Optio
             early_seal,
             avg_seal,
             avg_success,
+            open_limit: open_limit.len() as i64,
+            limit_down: limit_down.len() as i64,
         },
         stocks,
+        open_limit,
+        limit_down,
         sectors,
         fetched_at: db::now_ts(),
         source: "network".into(),
-        warning: block_warning.clone(),
+        warning: warning.clone(),
     };
-    Ok((payload, block_warning))
+    Ok((payload, warning))
+}
+
+fn aux_stock(item: &Value) -> Option<Stock> {
+    let code = string(&item["code"]);
+    if code.is_empty() {
+        return None;
+    }
+    let reason = string(&item["reason_type"]);
+    let spark = item["time_preview"]
+        .as_array()
+        .map(|a| a.iter().map(num).collect::<Vec<f64>>())
+        .unwrap_or_default();
+    Some(Stock {
+        code,
+        name: string(&item["name"]),
+        board: 0,
+        days: 0,
+        streak: 0,
+        high_days: string(&item["high_days"]),
+        price: num(&item["latest"]),
+        change_rate: num(&item["change_rate"]),
+        turnover_rate: num(&item["turnover_rate"]),
+        amount: num(&item["amount"]),
+        seal_amount: num(&item["order_amount"]),
+        first_seal: int(&item["first_limit_up_time"]),
+        last_seal: int(&item["last_limit_up_time"]),
+        open_num: int(&item["open_num"]),
+        limit_type: string(&item["limit_up_type"]),
+        reason_tags: db::split_reason(&reason),
+        reason,
+        market: string(&item["market_type"]),
+        market_id: int(&item["market_id"]),
+        success_rate: num(&item["limit_up_suc_rate"]) * 100.0,
+        float_cap: num(&item["currency_value"]),
+        is_new: int(&item["is_new"]) != 0,
+        is_again_limit: int(&item["is_again_limit"]) != 0,
+        spark,
+        sectors: Vec::new(),
+        primary_sector: None,
+    })
 }
 
 fn parse_board(s: &str) -> i64 {
@@ -386,20 +464,17 @@ fn secid(code: &str) -> String {
 
 fn period_klt(period: &str) -> &'static str {
     match period {
+        "15m" => "15",
+        "30m" => "30",
+        "60m" => "60",
         "week" => "102",
         "month" => "103",
+        "year" => "106",
         _ => "101",
     }
 }
 
-pub async fn fetch_kline(client: &Client, code: &str, period: &str) -> Result<(String, Vec<KlineCandle>)> {
-    let sid = secid(code);
-    let klt = period_klt(period);
-    let url = format!(
-        "https://push2his.eastmoney.com/api/qt/stock/kline/get?secid={sid}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt={klt}&fqt=1&end=20500101&lmt=400"
-    );
-    let json = get_json(client, &url, EM_REFERER).await?;
-    let data = &json["data"];
+fn parse_kline_json(data: &Value) -> Result<(String, Vec<KlineCandle>)> {
     if data.is_null() {
         return Err(anyhow!("未找到该代码的行情"));
     }
@@ -429,6 +504,25 @@ pub async fn fetch_kline(client: &Client, code: &str, period: &str) -> Result<(S
         return Err(anyhow!("该代码暂无K线数据"));
     }
     Ok((name, candles))
+}
+
+pub async fn fetch_kline(client: &Client, code: &str, period: &str) -> Result<(String, Vec<KlineCandle>)> {
+    let sid = secid(code);
+    let klt = period_klt(period);
+    let url = format!(
+        "https://push2his.eastmoney.com/api/qt/stock/kline/get?secid={sid}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt={klt}&fqt=1&end=20500101&lmt=400"
+    );
+    let json = get_json(client, &url, EM_REFERER).await?;
+    parse_kline_json(&json["data"])
+}
+
+pub async fn fetch_index_kline(client: &Client, sid: &str, period: &str) -> Result<(String, Vec<KlineCandle>)> {
+    let klt = period_klt(period);
+    let url = format!(
+        "https://push2his.eastmoney.com/api/qt/stock/kline/get?secid={sid}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt={klt}&fqt=1&end=20500101&lmt=400"
+    );
+    let json = get_json(client, &url, EM_REFERER).await?;
+    parse_kline_json(&json["data"])
 }
 
 pub async fn fetch_indices(client: &Client) -> Vec<(String, Vec<(String, f64, f64)>)> {

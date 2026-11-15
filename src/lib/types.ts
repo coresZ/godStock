@@ -1,6 +1,7 @@
 export type Theme = "dark" | "light";
-export type Period = "day" | "week" | "month";
-export type ViewName = "ladder" | "pool" | "chart";
+export type Period = "15m" | "30m" | "60m" | "day" | "week" | "month" | "year";
+export type ViewName = "ladder" | "pool" | "timeline" | "chart";
+export type PoolKind = "limitUp" | "openLimit" | "limitDown";
 
 export interface Stock {
   code: string;
@@ -51,6 +52,8 @@ export interface DayStats {
   earlySeal: number;
   avgSeal: number;
   avgSuccess: number;
+  openLimit: number;
+  limitDown: number;
 }
 
 export interface DayPayload {
@@ -58,6 +61,8 @@ export interface DayPayload {
   weekday: string;
   stats: DayStats;
   stocks: Stock[];
+  openLimit: Stock[];
+  limitDown: Stock[];
   sectors: Sector[];
   fetchedAt: number;
   source: string;
@@ -113,6 +118,42 @@ export interface SearchItem {
 
 export interface Settings {
   theme: Theme;
+}
+
+export interface WatchStock {
+  code: string;
+  name: string;
+  market: string;
+}
+
+export interface WatchGroup {
+  id: number;
+  name: string;
+  stocks: WatchStock[];
+}
+
+export interface WatchAddResult {
+  added: number;
+  skipped: number;
+}
+
+export interface ChartPrefs {
+  maEnabled: boolean;
+  maPeriods: number[];
+  emaEnabled: boolean;
+  emaPeriods: number[];
+  kdjEnabled: boolean;
+  kdjN: number;
+  kdjK: number;
+  kdjD: number;
+}
+
+export interface ChartSelection {
+  code: string;
+  name: string;
+  market: string;
+  kind: "stock" | "index";
+  secid?: string;
 }
 
 export interface DataInfo {

@@ -1,14 +1,18 @@
 import type {
   CalendarInfo,
+  ChartPrefs,
+  ChartSelection,
   DataInfo,
   DayPayload,
   IndexQuote,
   KlinePayload,
   Period,
+  PoolKind,
   SearchItem,
   Stock,
   Theme,
   ViewName,
+  WatchGroup,
 } from "./types";
 
 export type PoolFilter = "all" | "streak" | "first" | "oneWord" | "turnover";
@@ -18,6 +22,8 @@ export type SortKey =
   | "sealAmount"
   | "turnoverRate"
   | "firstSeal"
+  | "lastSeal"
+  | "openNum"
   | "amount"
   | "name";
 
@@ -31,19 +37,22 @@ export interface AppState {
   error: string | null;
   indices: IndexQuote[];
   view: ViewName;
-  returnView: ViewName;
-  chartStock: { code: string; name: string; market: string } | null;
+  returnView: Exclude<ViewName, "chart"> | "chart";
+  chartStock: ChartSelection | null;
   chartPeriod: Period;
   chartData: KlinePayload | null;
   chartLoading: boolean;
   chartError: string | null;
   chartRange: number;
-  chartEma: boolean;
-  chartKdj: boolean;
+  chartPrefs: ChartPrefs;
+  poolKind: PoolKind;
   poolFilter: PoolFilter;
   poolSector: string;
   poolQuery: string;
   poolSort: { key: SortKey; dir: 1 | -1 };
+  watchGroups: WatchGroup[];
+  watchGroupId: number | null;
+  watchCollapsed: boolean;
   dataInfo: DataInfo | null;
   sync: "idle" | "loading" | "live" | "cache" | "error";
   lastSyncAt: number;
@@ -68,12 +77,24 @@ export const state: AppState = {
   chartLoading: false,
   chartError: null,
   chartRange: 120,
-  chartEma: true,
-  chartKdj: true,
+  chartPrefs: {
+    maEnabled: false,
+    maPeriods: [5, 10, 20, 60],
+    emaEnabled: true,
+    emaPeriods: [5, 10, 20, 60],
+    kdjEnabled: true,
+    kdjN: 9,
+    kdjK: 3,
+    kdjD: 3,
+  },
+  poolKind: "limitUp",
   poolFilter: "all",
   poolSector: "",
   poolQuery: "",
   poolSort: { key: "streak", dir: -1 },
+  watchGroups: [],
+  watchGroupId: null,
+  watchCollapsed: false,
   dataInfo: null,
   sync: "idle",
   lastSyncAt: 0,
@@ -85,6 +106,7 @@ export function parseHash(): { view: ViewName; code: string } {
   const raw = window.location.hash.replace(/^#\/?/, "");
   const [view, code] = raw.split("/");
   if (view === "pool") return { view: "pool", code: "" };
+  if (view === "timeline") return { view: "timeline", code: "" };
   if (view === "chart" && code) return { view: "chart", code };
   return { view: "ladder", code: "" };
 }
@@ -131,19 +153,28 @@ export function findStock(code: string): Stock | undefined {
   return state.day?.stocks.find((s) => s.code === code);
 }
 
+export function poolStocks(): Stock[] {
+  if (!state.day) return [];
+  if (state.poolKind === "openLimit") return state.day.openLimit;
+  if (state.poolKind === "limitDown") return state.day.limitDown;
+  return state.day.stocks;
+}
+
 export function filterStocks(): Stock[] {
   const day = state.day;
   if (!day) return [];
   const q = state.poolQuery.trim().toLowerCase();
-  const sector = state.poolSector
+  const sector = state.poolKind === "limitUp" && state.poolSector
     ? day.sectors.find((s) => s.code === state.poolSector)?.name
     : null;
-  const list = day.stocks.filter((s) => {
-    if (state.poolFilter === "streak" && s.streak < 2) return false;
-    if (state.poolFilter === "first" && s.streak > 1) return false;
-    if (state.poolFilter === "oneWord" && !s.limitType.includes("一字")) return false;
-    if (state.poolFilter === "turnover" && !s.limitType.includes("换手")) return false;
-    if (sector && !s.sectors.includes(sector)) return false;
+  const list = poolStocks().filter((s) => {
+    if (state.poolKind === "limitUp") {
+      if (state.poolFilter === "streak" && s.streak < 2) return false;
+      if (state.poolFilter === "first" && s.streak > 1) return false;
+      if (state.poolFilter === "oneWord" && !s.limitType.includes("一字")) return false;
+      if (state.poolFilter === "turnover" && !s.limitType.includes("换手")) return false;
+      if (sector && !s.sectors.includes(sector)) return false;
+    }
     if (q) {
       const hit =
         s.code.includes(q) ||

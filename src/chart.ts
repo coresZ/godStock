@@ -1,11 +1,27 @@
 import type { KlineCandle, Period } from "./lib/types";
 import { fmtAmount, fmtPct, fmtPrice, fmtVolume } from "./lib/ui";
 
-interface ChartOptions {
+export interface KLineIndicatorConfig {
+  maEnabled: boolean;
+  maPeriods: number[];
+  emaEnabled: boolean;
+  emaPeriods: number[];
+  kdjEnabled: boolean;
+  kdjN: number;
+  kdjK: number;
+  kdjD: number;
+}
+
+interface ChartOptions extends KLineIndicatorConfig {
   period: Period;
   range: number;
-  showEma: boolean;
-  showKdj: boolean;
+}
+
+interface LineSeries {
+  period: number;
+  values: number[];
+  color: string;
+  dashed: boolean;
 }
 
 interface Colors {
@@ -60,8 +76,7 @@ export class KLineChart {
   private candles: KlineCandle[] = [];
   private period: Period;
   private range: number;
-  private showEma: boolean;
-  private showKdj: boolean;
+  private config: KLineIndicatorConfig;
   private viewStart = 0;
   private viewCount = 0;
   private hover: number | null = null;
@@ -71,10 +86,8 @@ export class KLineChart {
   private raf = 0;
   private observer: ResizeObserver;
   private abort = new AbortController();
-  private ema5: number[] = [];
-  private ema10: number[] = [];
-  private ema20: number[] = [];
-  private ema60: number[] = [];
+  private maSeries: LineSeries[] = [];
+  private emaSeries: LineSeries[] = [];
   private kdjK: number[] = [];
   private kdjD: number[] = [];
   private kdjJ: number[] = [];
@@ -84,8 +97,16 @@ export class KLineChart {
     this.container = container;
     this.period = opts.period;
     this.range = opts.range;
-    this.showEma = opts.showEma;
-    this.showKdj = opts.showKdj;
+    this.config = {
+      maEnabled: opts.maEnabled,
+      maPeriods: opts.maPeriods.slice(),
+      emaEnabled: opts.emaEnabled,
+      emaPeriods: opts.emaPeriods.slice(),
+      kdjEnabled: opts.kdjEnabled,
+      kdjN: opts.kdjN,
+      kdjK: opts.kdjK,
+      kdjD: opts.kdjD,
+    };
     this.colors = this.readColors();
 
     container.classList.add("kline-host");
@@ -139,13 +160,19 @@ export class KLineChart {
     this.draw();
   }
 
-  setOptions(opts: Partial<ChartOptions>): void {
-    if (typeof opts.showEma === "boolean") this.showEma = opts.showEma;
-    if (typeof opts.showKdj === "boolean") this.showKdj = opts.showKdj;
-    if (typeof opts.range === "number" && opts.range !== this.range) {
-      this.range = opts.range;
-      this.resetView();
-    }
+  setPeriod(period: Period): void {
+    this.period = period;
+    this.lastLegendIndex = -2;
+    this.draw();
+  }
+
+  setConfig(config: KLineIndicatorConfig): void {
+    this.config = {
+      ...config,
+      maPeriods: config.maPeriods.slice(),
+      emaPeriods: config.emaPeriods.slice(),
+    };
+    this.computeIndicators();
     this.colors = this.readColors();
     this.lastLegendIndex = -2;
     this.renderLegend();
@@ -182,14 +209,37 @@ export class KLineChart {
 
   private computeIndicators(): void {
     const closes = this.candles.map((c) => c.close);
-    this.ema5 = ema(closes, 5);
-    this.ema10 = ema(closes, 10);
-    this.ema20 = ema(closes, 20);
-    this.ema60 = ema(closes, 60);
-    const { k, d, j } = kdj(this.candles, 9);
-    this.kdjK = k;
-    this.kdjD = d;
-    this.kdjJ = j;
+    const palette = [this.colors.brass, this.colors.up, this.colors.down, this.colors.violet];
+    if (this.config.maEnabled) {
+      this.maSeries = this.config.maPeriods.slice(0, 4).map((period, i) => ({
+        period,
+        values: ma(closes, period),
+        color: palette[i % palette.length],
+        dashed: true,
+      }));
+    } else {
+      this.maSeries = [];
+    }
+    if (this.config.emaEnabled) {
+      this.emaSeries = this.config.emaPeriods.slice(0, 4).map((period, i) => ({
+        period,
+        values: ema(closes, period),
+        color: palette[i % palette.length],
+        dashed: false,
+      }));
+    } else {
+      this.emaSeries = [];
+    }
+    if (this.config.kdjEnabled) {
+      const result = kdj(this.candles, this.config.kdjN, this.config.kdjK, this.config.kdjD);
+      this.kdjK = result.k;
+      this.kdjD = result.d;
+      this.kdjJ = result.j;
+    } else {
+      this.kdjK = [];
+      this.kdjD = [];
+      this.kdjJ = [];
+    }
   }
 
   private resize(): void {
@@ -452,14 +502,12 @@ export class KLineChart {
     const lows = visible.map((d) => d.low);
     let hi = Math.max(...highs);
     let lo = Math.min(...lows);
-    if (this.showEma) {
-      for (const arr of [this.ema5, this.ema10, this.ema20, this.ema60]) {
-        for (let i = start; i < start + count; i++) {
-          const v = arr[i];
-          if (Number.isFinite(v)) {
-            hi = Math.max(hi, v);
-            lo = Math.min(lo, v);
-          }
+    for (const series of [...this.maSeries, ...this.emaSeries]) {
+      for (let i = start; i < start + count; i++) {
+        const v = series.values[i];
+        if (Number.isFinite(v)) {
+          hi = Math.max(hi, v);
+          lo = Math.min(lo, v);
         }
       }
     }
@@ -477,9 +525,9 @@ export class KLineChart {
 
     this.drawGrid(layout, lo, hi, priceY, start, count, xAt);
     this.drawVolume(layout, visible, start, xAt);
-    if (this.showKdj) this.drawKdj(layout, start, count, xAt);
+    if (this.config.kdjEnabled) this.drawKdj(layout, start, count, xAt);
     this.drawCandles(layout, visible, start, xAt, priceY);
-    if (this.showEma) this.drawEma(layout, start, count, xAt, priceY);
+    this.drawLines(layout, start, count, xAt, priceY);
     this.drawLastPrice(layout, visible[visible.length - 1], priceY);
     this.drawAxisDate(layout, start, count, xAt);
     if (this.hover != null && !this.drag.dragging) {
@@ -497,8 +545,8 @@ export class KLineChart {
     const gap1 = 18;
     const gap2 = 19;
     const wantVol = clamp(total * 0.14, 38, 64);
-    const wantKdj = this.showKdj ? clamp(total * 0.23, 82, 126) : 0;
-    const priceHeight = Math.max(120, total - wantVol - wantKdj - gap1 - (this.showKdj ? gap2 : 0));
+    const wantKdj = this.config.kdjEnabled ? clamp(total * 0.23, 82, 126) : 0;
+    const priceHeight = Math.max(120, total - wantVol - wantKdj - gap1 - (this.config.kdjEnabled ? gap2 : 0));
     const priceTop = topPad;
     const priceBottom = priceTop + priceHeight;
     const volTop = priceBottom + gap1;
@@ -558,7 +606,7 @@ export class KLineChart {
       c.strokeStyle = this.colors.line;
       c.beginPath();
       c.moveTo(x, l.priceTop);
-      c.lineTo(x, this.showKdj ? l.kdjBottom : l.volBottom);
+      c.lineTo(x, this.config.kdjEnabled ? l.kdjBottom : l.volBottom);
       c.stroke();
     }
     c.strokeStyle = this.colors.line;
@@ -567,7 +615,7 @@ export class KLineChart {
     c.lineTo(l.width - l.axisRight, l.priceBottom + 0.5);
     c.moveTo(l.left, l.volTop - 0.5);
     c.lineTo(l.width - l.axisRight, l.volTop - 0.5);
-    if (this.showKdj) {
+    if (this.config.kdjEnabled) {
       c.moveTo(l.left, l.kdjTop - 0.5);
       c.lineTo(l.width - l.axisRight, l.kdjTop - 0.5);
     }
@@ -577,7 +625,9 @@ export class KLineChart {
     c.fillStyle = this.colors.faint;
     c.textBaseline = "top";
     c.fillText("成交量", l.left + 1, l.volTop + 3);
-    if (this.showKdj) c.fillText("KDJ (9, 3, 3)", l.left + 1, l.kdjTop + 3);
+    if (this.config.kdjEnabled) {
+      c.fillText(`KDJ (${this.config.kdjN}, ${this.config.kdjK}, ${this.config.kdjD})`, l.left + 1, l.kdjTop + 3);
+    }
     c.restore();
   }
 
@@ -625,7 +675,7 @@ export class KLineChart {
     c.restore();
   }
 
-  private drawEma(
+  private drawLines(
     l: Layout,
     start: number,
     count: number,
@@ -633,24 +683,19 @@ export class KLineChart {
     priceY: (v: number) => number,
   ): void {
     const c = this.ctx;
-    const series: Array<[number[], string]> = [
-      [this.ema5, this.colors.brass],
-      [this.ema10, this.colors.up],
-      [this.ema20, this.colors.down],
-      [this.ema60, this.colors.violet],
-    ];
     c.save();
     c.beginPath();
     c.rect(l.left, l.priceTop, l.width - l.left - l.axisRight, l.priceHeight);
     c.clip();
-    for (const [arr, color] of series) {
+    for (const series of [...this.maSeries, ...this.emaSeries]) {
       c.beginPath();
-      c.strokeStyle = color;
-      c.lineWidth = 1.15;
-      c.globalAlpha = 0.78;
+      c.strokeStyle = series.color;
+      c.lineWidth = series.dashed ? 1 : 1.15;
+      c.globalAlpha = series.dashed ? 0.44 : 0.8;
+      c.setLineDash(series.dashed ? [3, 3] : []);
       let started = false;
       for (let i = start; i < start + count; i++) {
-        const v = arr[i];
+        const v = series.values[i];
         if (!Number.isFinite(v)) continue;
         const x = xAt(i);
         const y = priceY(v);
@@ -663,6 +708,7 @@ export class KLineChart {
       }
       c.stroke();
     }
+    c.setLineDash([]);
     c.restore();
   }
 
@@ -691,7 +737,7 @@ export class KLineChart {
   }
 
   private drawKdj(l: Layout, start: number, count: number, xAt: (i: number) => number): void {
-    if (!this.showKdj) return;
+    if (!this.config.kdjEnabled) return;
     const c = this.ctx;
     const y = (v: number) => l.kdjBottom - (clamp(v, 0, 100) / 100) * l.kdjHeight;
     c.save();
@@ -796,8 +842,14 @@ export class KLineChart {
   }
 
   private formatAxisDate(date: string): string {
+    if (date.includes(" ")) {
+      const [day, time] = date.split(" ");
+      const [, m, d] = day.split("-");
+      return `${m}.${d} ${time.slice(0, 5)}`;
+    }
     if (date.length === 10) {
       const [y, m, d] = date.split("-");
+      if (this.period === "year") return y;
       if (this.period === "month") return `${y.slice(2)}.${m}`;
       return `${m}.${d}`;
     }
@@ -821,7 +873,7 @@ export class KLineChart {
     c.setLineDash([3, 3]);
     c.beginPath();
     c.moveTo(x, l.priceTop);
-    c.lineTo(x, this.showKdj ? l.kdjBottom : l.volBottom);
+    c.lineTo(x, this.config.kdjEnabled ? l.kdjBottom : l.volBottom);
     c.stroke();
     c.beginPath();
     c.moveTo(l.left, y);
@@ -860,6 +912,7 @@ export class KLineChart {
   }
 
   private fullDate(date: string): string {
+    if (date.includes(" ")) return date;
     if (date.length === 10) return date;
     if (date.length === 8) return `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}`;
     return date;
@@ -872,10 +925,20 @@ export class KLineChart {
     const pctUp = d.pct >= 0;
     const c = d.close;
     const chg = d.open ? ((d.close - d.open) / d.open) * 100 : 0;
-    const emaVals = [this.ema5[index], this.ema10[index], this.ema20[index], this.ema60[index]];
-    const k = this.kdjK[index];
-    const dd = this.kdjD[index];
-    const j = this.kdjJ[index];
+    const fmt = (v: number) => (Number.isFinite(v) ? fmtPrice(v) : "—");
+    const inds: string[] = [];
+    for (const series of this.maSeries) {
+      inds.push(`<span style="color:${series.color}">MA${series.period} ${fmt(series.values[index])}</span>`);
+    }
+    for (const series of this.emaSeries) {
+      inds.push(`<span style="color:${series.color}">EMA${series.period} ${fmt(series.values[index])}</span>`);
+    }
+    if (this.config.kdjEnabled) {
+      inds.push(`<span style="color:${this.colors.brass}">K ${fmt(this.kdjK[index])}</span>`);
+      inds.push(`<span style="color:${this.colors.down}">D ${fmt(this.kdjD[index])}</span>`);
+      inds.push(`<span style="color:${this.colors.violet}">J ${fmt(this.kdjJ[index])}</span>`);
+    }
+    if (!inds.length) inds.push(`<span>涨跌 ${chg.toFixed(2)}%</span>`);
     this.tooltip.innerHTML = `
       <div class="tooltip-date"><span>${this.fullDate(d.date)}</span><span class="tooltip-pct ${pctUp ? "" : "down"}">${fmtPct(d.pct)}</span></div>
       <div class="tooltip-grid">
@@ -888,11 +951,7 @@ export class KLineChart {
         <span>换手</span><span>${d.turnover.toFixed(2)}%</span>
         <span>振幅</span><span>${(((d.high - d.low) / Math.max(0.001, d.open)) * 100).toFixed(2)}%</span>
       </div>
-      <div class="tooltip-inds">
-        ${this.showEma ? `<span style="color:var(--brass)">EMA5 ${fmtPrice(emaVals[0])}</span><span style="color:var(--up)">EMA10 ${fmtPrice(emaVals[1])}</span><span style="color:var(--down)">EMA20 ${fmtPrice(emaVals[2])}</span><span style="color:var(--violet)">EMA60 ${fmtPrice(emaVals[3])}</span>` : ""}
-        ${this.showKdj ? `<span style="color:var(--brass)">K ${fmtPrice(k, 1)}</span><span style="color:var(--down)">D ${fmtPrice(dd, 1)}</span><span style="color:var(--violet)">J ${fmtPrice(j, 1)}</span>` : ""}
-        ${!this.showEma && !this.showKdj ? `<span>涨跌 ${chg.toFixed(2)}%</span>` : ""}
-      </div>`;
+      <div class="tooltip-inds">${inds.join("")}</div>`;
     const x = this.xForIndex(index);
     const stageW = this.container.clientWidth;
     const tw = this.tooltip.offsetWidth || 196;
@@ -919,16 +978,20 @@ export class KLineChart {
     this.lastLegendIndex = index;
     const fmt = (v: number) => (Number.isFinite(v) ? fmtPrice(v) : "—");
     const parts: string[] = [];
-    if (this.showEma) {
-      parts.push(`<span class="legend-item ema5"><i class="legend-swatch"></i>EMA5 ${fmt(this.ema5[index])}</span>`);
-      parts.push(`<span class="legend-item ema10"><i class="legend-swatch"></i>EMA10 ${fmt(this.ema10[index])}</span>`);
-      parts.push(`<span class="legend-item ema20"><i class="legend-swatch"></i>EMA20 ${fmt(this.ema20[index])}</span>`);
-      parts.push(`<span class="legend-item ema60"><i class="legend-swatch"></i>EMA60 ${fmt(this.ema60[index])}</span>`);
+    for (const series of this.maSeries) {
+      parts.push(
+        `<span class="legend-item" style="color:${series.color};opacity:.72"><i class="legend-swatch"></i>MA${series.period} ${fmt(series.values[index])}</span>`,
+      );
     }
-    if (this.showKdj) {
-      parts.push(`<span class="legend-item kdj-k">K ${fmt(this.kdjK[index])}</span>`);
-      parts.push(`<span class="legend-item kdj-d">D ${fmt(this.kdjD[index])}</span>`);
-      parts.push(`<span class="legend-item kdj-j">J ${fmt(this.kdjJ[index])}</span>`);
+    for (const series of this.emaSeries) {
+      parts.push(
+        `<span class="legend-item" style="color:${series.color}"><i class="legend-swatch"></i>EMA${series.period} ${fmt(series.values[index])}</span>`,
+      );
+    }
+    if (this.config.kdjEnabled) {
+      parts.push(`<span class="legend-item" style="color:${this.colors.brass}">K ${fmt(this.kdjK[index])}</span>`);
+      parts.push(`<span class="legend-item" style="color:${this.colors.down}">D ${fmt(this.kdjD[index])}</span>`);
+      parts.push(`<span class="legend-item" style="color:${this.colors.violet}">J ${fmt(this.kdjJ[index])}</span>`);
     }
     this.legend.innerHTML = parts.join("");
   }
@@ -950,12 +1013,30 @@ function ema(values: number[], period: number): number[] {
   return out;
 }
 
-function kdj(candles: KlineCandle[], period = 9): { k: number[]; d: number[]; j: number[] } {
+function ma(values: number[], period: number): number[] {
+  const out: number[] = new Array(values.length).fill(NaN);
+  let sum = 0;
+  for (let i = 0; i < values.length; i++) {
+    sum += values[i];
+    if (i >= period) sum -= values[i - period];
+    if (i >= period - 1) out[i] = sum / period;
+  }
+  return out;
+}
+
+function kdj(
+  candles: KlineCandle[],
+  period = 9,
+  smoothK = 3,
+  smoothD = 3,
+): { k: number[]; d: number[]; j: number[] } {
   const k: number[] = [];
   const d: number[] = [];
   const j: number[] = [];
   let prevK = 50;
   let prevD = 50;
+  const kk = Math.max(1, smoothK);
+  const dd = Math.max(1, smoothD);
   for (let i = 0; i < candles.length; i++) {
     const start = Math.max(0, i - period + 1);
     let hi = -Infinity;
@@ -965,8 +1046,8 @@ function kdj(candles: KlineCandle[], period = 9): { k: number[]; d: number[]; j:
       lo = Math.min(lo, candles[x].low);
     }
     const rsv = hi === lo ? 50 : ((candles[i].close - lo) / (hi - lo)) * 100;
-    prevK = (2 / 3) * prevK + (1 / 3) * rsv;
-    prevD = (2 / 3) * prevD + (1 / 3) * prevK;
+    prevK = ((kk - 1) * prevK + rsv) / kk;
+    prevD = ((dd - 1) * prevD + prevK) / dd;
     k.push(prevK);
     d.push(prevD);
     j.push(3 * prevK - 2 * prevD);

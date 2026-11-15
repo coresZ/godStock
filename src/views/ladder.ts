@@ -259,7 +259,7 @@ export function renderLadder(): string {
     body = `
       <div class="section-head">
         <h2 class="section-title">连板天梯</h2>
-        <span class="section-sub">按连续涨停高度排列 · 共 ${day.stocks.length} 只</span>
+        <span class="section-sub">按连续涨停高度排列 · 连板 ${day.stats.consecutive} · 首板 ${day.stats.firstBoard} · 共 ${day.stocks.length} 只</span>
         <button class="section-note" data-action="refresh-day" title="重新拉取当日数据">${icon("refresh", 13)}${state.refreshing ? "同步中" : relTime(day.fetchedAt)}</button>
       </div>
       ${day.warning ? warningBanner(day.warning) : ""}

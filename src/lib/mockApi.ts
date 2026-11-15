@@ -8,9 +8,18 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
   switch (cmd) {
     case "get_calendar":
       return mockCalendar as T;
-    case "get_day":
-      return { ...mockDay, source: args?.refresh ? "network" : "cache" } as T;
-    case "get_kline": {
+    case "get_day": {
+      const d = mockDay as unknown as DayPayload;
+      return {
+        ...d,
+        stats: { ...d.stats, openLimit: 0, limitDown: 0 },
+        openLimit: [],
+        limitDown: [],
+        source: args?.refresh ? "network" : "cache",
+      } as T;
+    }
+    case "get_kline":
+    case "get_index_kline": {
       const period = (args?.period as string) || "day";
       const key = period in mockKlines ? period : "day";
       return mockKlines[key] as T;
@@ -37,6 +46,37 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
     case "set_theme":
       localStorage.setItem("tianti-theme", String(args?.theme));
       return undefined as T;
+    case "get_watch_groups":
+      return [
+        {
+          id: 1,
+          name: "我的自选",
+          stocks: [
+            { code: "600519", name: "贵州茅台", market: "1" },
+            { code: "002520", name: "日发精机", market: "0" },
+          ],
+        },
+      ] as T;
+    case "create_watch_group":
+      return 2 as T;
+    case "rename_watch_group":
+    case "delete_watch_group":
+    case "remove_watch_stock":
+    case "save_chart_prefs":
+      return undefined as T;
+    case "add_watch_stocks":
+      return { added: 1, skipped: 0 } as T;
+    case "get_chart_prefs":
+      return {
+        maEnabled: false,
+        maPeriods: [5, 10, 20, 60],
+        emaEnabled: true,
+        emaPeriods: [5, 10, 20, 60],
+        kdjEnabled: true,
+        kdjN: 9,
+        kdjK: 3,
+        kdjD: 3,
+      } as T;
     case "get_data_info":
       return {
         dataDir: "D:\\source\\godStock\\release\\data",
