@@ -1,0 +1,20 @@
+node_modules/
+dist/
+src-tauri/target/
+dist-test*/
+dist-final-check/
+.tmp/
+
+# runtime data and binaries
+release/data/
+release/*.exe
+*.db
+*.db-wal
+*.db-shm
+*.log
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

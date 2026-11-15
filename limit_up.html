@@ -1,0 +1,4165 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>涨停排行 · 同花顺</title>
+<link rel="preconnect" href="https://stockpage.10jqka.com.cn" crossorigin>
+<link rel="preconnect" href="https://m.10jqka.com.cn" crossorigin>
+<link rel="preconnect" href="https://data.10jqka.com.cn" crossorigin>
+<link rel="dns-prefetch" href="https://stockpage.10jqka.com.cn">
+<link rel="dns-prefetch" href="https://m.10jqka.com.cn">
+<link rel="dns-prefetch" href="https://data.10jqka.com.cn">
+<style>
+:root {
+  /* Design Language B · Tool Precision — dark default */
+  --bg: #0b1220;
+  --card: #151d2e;
+  --surface-2: #1a2333;
+  --surface-3: #0f1624;
+  --text: #e8eef7;
+  --muted: #8b9bb4;
+  --border: #2a3548;
+  --hover: #1c2738;
+  --primary: #3b82f6;
+  --primary-soft: rgba(59, 130, 246, .15);
+  --primary-text: #93c5fd;
+  --accent: #8b5cf6;
+  --up: #f87171;
+  --down: #4ade80;
+  --warn-bg: #3b2a0a;
+  --warn-bd: #854d0e;
+  --warn-fg: #fde68a;
+  --err-bg: #3f1212;
+  --err-fg: #fca5a5;
+  --ok-bg: #064e3b;
+  --ok-fg: #6ee7b7;
+  --gap: 10px;
+  --radius: 12px;
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --input-bg: #0f1624;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,.25);
+  --focus-ring: #60a5fa;
+  color-scheme: dark;
+}
+html.light {
+  --bg: #e8edf5;
+  --card: #ffffff;
+  --surface-2: #f8fafc;
+  --surface-3: #f1f5f9;
+  --text: #0f172a;
+  --muted: #64748b;
+  --border: #e2e8f0;
+  --hover: #f1f5f9;
+  --primary: #2563eb;
+  --primary-soft: rgba(37, 99, 235, .1);
+  --primary-text: #1d4ed8;
+  --accent: #7c3aed;
+  --up: #dc2626;
+  --down: #16a34a;
+  --warn-bg: #fffbeb;
+  --warn-bd: #fde68a;
+  --warn-fg: #92400e;
+  --err-bg: #fef2f2;
+  --err-fg: #dc2626;
+  --ok-bg: #ecfdf5;
+  --ok-fg: #047857;
+  --input-bg: #ffffff;
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, .04);
+  --focus-ring: #93c5fd;
+  color-scheme: light;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+:focus { outline: none; }
+:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+html, body { height: 100%; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  background: var(--bg); color: var(--text); line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+  display: flex; flex-direction: column; height: 100vh; overflow: hidden;
+  padding: 0 12px 12px;
+}
+/* —— app top menu —— */
+.app-nav {
+  flex: 0 0 auto;
+  margin: 0 -12px 10px;
+  padding: 0 12px;
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
+}
+.app-nav-inner {
+  display: flex; align-items: center; gap: 16px;
+  height: 44px; max-width: 100%;
+}
+.app-logo {
+  font-size: 14px; font-weight: 700; color: var(--text);
+  text-decoration: none; letter-spacing: -.02em; white-space: nowrap;
+}
+.app-nav-links { display: flex; align-items: center; gap: 4px; }
+.app-nav-link {
+  display: inline-flex; align-items: center; height: 30px;
+  padding: 0 14px; border-radius: 999px;
+  font-size: 12px; font-weight: 600; color: var(--muted);
+  text-decoration: none; border: 1px solid transparent;
+  transition: all .12s ease;
+}
+.app-nav-link:hover { color: var(--primary); background: var(--primary-soft); }
+.app-nav-link.active {
+  color: var(--primary); background: var(--primary-soft); border-color: var(--primary);
+}
+/* —— header —— */
+.top { flex: 0 0 auto; margin-bottom: var(--gap); }
+.top-main {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px;
+}
+.brand { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.brand h1 { font-size: 18px; font-weight: 700; letter-spacing: -.02em; white-space: nowrap; }
+.brand .sub { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.toolbar {
+  --tb-h: 28px;
+  --tb-fs: 12px;
+  --tb-fw: 600;
+  --tb-radius: 999px;
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+  background: var(--card); border: 1px solid var(--border); border-radius: var(--tb-radius);
+  padding: 5px 8px; box-shadow: var(--shadow-sm);
+  font-size: var(--tb-fs); font-weight: var(--tb-fw); color: var(--text);
+}
+/* 工具栏控件统一：高度 / 字号 / 字重 / 圆角 / 边框 */
+.toolbar .nav-ctl,
+.toolbar .btn,
+.toolbar .day-badge,
+.toolbar .status {
+  height: var(--tb-h); box-sizing: border-box;
+  font-family: inherit; font-size: var(--tb-fs); font-weight: var(--tb-fw);
+  line-height: 1; border-radius: var(--tb-radius);
+  display: inline-flex; align-items: center; justify-content: center;
+  white-space: nowrap;
+}
+.date-nav { display: flex; align-items: center; gap: 4px; }
+.date-nav .nav-ctl {
+  border: 1px solid var(--border); background: var(--input-bg); color: var(--text);
+  padding: 0 10px; cursor: pointer;
+}
+.date-nav button.nav-ctl {
+  width: var(--tb-h); min-width: var(--tb-h); padding: 0;
+  font-size: 13px; font-weight: 500;
+}
+.date-nav button.nav-ctl:disabled { opacity: .35; cursor: not-allowed; }
+.date-nav button.nav-ctl:not(:disabled):hover { background: var(--hover); border-color: var(--border); }
+.date-nav select.nav-ctl { min-width: 118px; cursor: pointer; appearance: auto; }
+.date-nav input[type=date].nav-ctl {
+  min-width: 124px; color: var(--text); cursor: pointer;
+}
+.date-nav .nav-ctl:hover { border-color: var(--border); }
+.date-nav .nav-ctl:focus {
+  outline: none; border-color: var(--primary);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, .12);
+}
+.day-badge {
+  padding: 0 10px; border: 1px solid transparent;
+}
+.day-badge.is-trade { background: var(--ok-bg); color: var(--ok-fg); border-color: var(--ok-fg); }
+.day-badge.not-trade { background: var(--err-bg); color: var(--err-fg); border-color: var(--err-fg); }
+.day-badge.unknown { background: var(--hover); color: var(--muted); border-color: var(--border); }
+.btn {
+  border: 1px solid transparent; padding: 0 12px;
+  cursor: pointer; background: var(--primary); color: #fff;
+}
+.btn:hover { filter: brightness(.96); }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn.export { background: var(--accent); }
+.btn.ghost {
+  background: var(--card); color: var(--text); border-color: var(--border);
+}
+.btn.ghost:hover { color: var(--primary); border-color: var(--primary); background: var(--primary-soft); }
+.status {
+  padding: 0 10px; max-width: 160px; overflow: hidden; text-overflow: ellipsis;
+  background: var(--surface-2); color: var(--muted); border: 1px solid var(--border);
+  font-weight: 500;
+}
+/* —— secondary menu (settings) —— */
+.menu-wrap { position: relative; }
+.menu-panel {
+  display: none; position: absolute; top: calc(100% + 8px); right: 0; z-index: 40;
+  width: min(420px, calc(100vw - 24px));
+  background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, .14);
+  overflow: hidden;
+}
+.menu-panel.open { display: block; }
+.menu-tabs {
+  display: flex; gap: 0; border-bottom: 1px solid var(--border); background: var(--surface-2);
+}
+.menu-tab {
+  flex: 1; border: 0; background: transparent; padding: 10px 12px;
+  font-size: 12px; font-weight: 600; color: var(--muted); cursor: pointer;
+}
+.menu-tab:hover { color: var(--text); background: var(--card); }
+.menu-tab.active {
+  color: var(--primary); background: var(--card);
+  box-shadow: inset 0 -2px 0 var(--primary);
+}
+.menu-body { padding: 12px; }
+.menu-pane { display: none; }
+.menu-pane.active { display: block; }
+.menu-pane label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.menu-row {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px;
+}
+.menu-row label { margin: 0; white-space: nowrap; }
+.menu-pane select, .menu-pane input, .menu-pane textarea {
+  padding: 6px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  font-size: 12px; background: var(--input-bg); color: var(--text);
+}
+.menu-pane select { min-width: 120px; }
+.menu-pane input { flex: 1; min-width: 160px; font-family: ui-monospace, Consolas, monospace; }
+#prompt-text {
+  width: 100%; min-height: 180px; font-family: ui-monospace, Consolas, monospace;
+  resize: vertical; line-height: 1.5;
+}
+.menu-hint { font-size: 11px; color: var(--muted); margin-top: 6px; line-height: 1.4; }
+.menu-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+.btn.ghost.active { color: var(--primary); border-color: var(--primary); background: var(--primary-soft); }
+.switch {
+  position: relative; display: inline-flex; align-items: center;
+  width: 40px; height: 22px; cursor: pointer; flex-shrink: 0;
+}
+.switch input { opacity: 0; width: 0; height: 0; position: absolute; }
+.switch-ui {
+  position: absolute; inset: 0; border-radius: 999px;
+  background: #475569; transition: background .15s ease;
+}
+.switch-ui::after {
+  content: ''; position: absolute; top: 2px; left: 2px;
+  width: 18px; height: 18px; border-radius: 50%; background: var(--card);
+  box-shadow: 0 1px 2px rgba(0,0,0,.15); transition: transform .15s ease;
+}
+.switch input:checked + .switch-ui { background: var(--primary); }
+.switch input:checked + .switch-ui::after { transform: translateX(18px); }
+/* —— main 3-col —— */
+.layout {
+  flex: 1 1 auto; min-height: 0; position: relative;
+  display: grid;
+  grid-template-columns: minmax(200px, 0.62fr) minmax(320px, 1.25fr) minmax(0, 1.45fr);
+  gap: var(--gap);
+}
+.card {
+  background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  display: flex; flex-direction: column; min-height: 0; overflow: hidden;
+}
+.card-hd {
+  flex: 0 0 auto;
+  display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  padding: 9px 12px; border-bottom: 1px solid var(--border); font-size: 13px; font-weight: 650;
+  background: linear-gradient(180deg, var(--card), var(--surface-2));
+}
+.card-hd .meta {
+  font-weight: 500; font-size: 11px; color: var(--muted); white-space: nowrap;
+  background: var(--hover); padding: 2px 8px; border-radius: 999px;
+}
+.tab-switch { display: flex; gap: 0; background: var(--hover); border-radius: 999px; padding: 3px; }
+.tab-btn {
+  border: 0; background: transparent; border-radius: 999px; padding: 6px 18px;
+  font-size: 13px; font-weight: 600; color: var(--muted); cursor: pointer; transition: all .12s ease;
+}
+.tab-btn.active { background: var(--card); color: var(--text); font-weight: 700; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+.tab-btn:hover:not(.active) { color: var(--text); }
+.card-bd { flex: 1 1 auto; min-height: 0; overflow: auto; }
+#event-card .card-hd { background: linear-gradient(90deg, var(--primary-soft), var(--card) 60%); }
+.filter-bar {
+  flex: 0 0 auto;
+  display: flex; flex-wrap: wrap; gap: 5px; align-items: center;
+  padding: 7px 10px; border-bottom: 1px solid var(--border); background: var(--surface-2);
+}
+.filter-bar .label { font-size: 11px; color: var(--muted); margin-right: 2px; }
+.chip {
+  border: 1px solid var(--border); background: var(--card); color: var(--muted);
+  border-radius: 999px; padding: 2px 9px; font-size: 11px; cursor: pointer;
+}
+.chip:hover { border-color: var(--primary); color: var(--primary); }
+.chip.active { background: var(--primary-soft); border-color: var(--primary); color: var(--primary); font-weight: 600; }
+.msg { margin: 12px; padding: 10px 12px; border-radius: 8px; font-size: 12px; }
+.msg.loading { color: var(--muted); text-align: center; padding: 36px 12px; margin: 0; }
+.msg.error { background: var(--err-bg); color: var(--err-fg); }
+.msg.warn { background: var(--warn-bg); color: var(--warn-fg); border: 1px solid var(--warn-bd); }
+/* —— event cards —— */
+.ev-list { display: flex; flex-direction: column; gap: 0; padding: 6px; }
+.ev-item {
+  border: 1px solid transparent; border-radius: 10px; padding: 10px 10px 8px;
+  cursor: default; transition: background .12s, border-color .12s;
+}
+.ev-item:hover { background: var(--hover); }
+.ev-item + .ev-item { border-top: 1px solid var(--border); border-radius: 0; }
+.ev-top { display: flex; align-items: flex-start; gap: 8px; margin-bottom: 6px; }
+.ev-heat {
+  flex: 0 0 auto; min-width: 44px; text-align: center;
+  font: 600 12px/1.2 ui-monospace, Consolas, monospace;
+  color: var(--up); background: var(--err-bg); border-radius: 6px; padding: 4px 6px;
+}
+.ev-heat.mid { color: var(--warn-fg); background: var(--warn-bg); }
+.ev-heat.low { color: var(--muted); background: var(--hover); }
+.ev-title {
+  flex: 1 1 auto; min-width: 0; font-size: 12.5px; font-weight: 600; line-height: 1.35;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.ev-dir {
+  flex: 0 0 auto; font-size: 11px; font-weight: 600; color: var(--primary);
+  background: var(--primary-soft); border: 1px solid #bfdbfe; border-radius: 999px; padding: 2px 8px;
+  max-width: 88px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ev-themes { margin-bottom: 6px; }
+.ev-stock {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  font-size: 11.5px; color: var(--muted);
+}
+.ev-stock b { color: var(--text); font-weight: 600; }
+.ev-stock .rate { font-family: ui-monospace, Consolas, monospace; font-weight: 600; }
+/* —— tables —— */
+table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12.5px; }
+th {
+  text-align: left; padding: 8px 10px; background: var(--surface-2); border-bottom: 1px solid var(--border);
+  color: var(--muted); font-weight: 650; white-space: nowrap; position: sticky; top: 0; z-index: 2;
+}
+th.sortable { cursor: pointer; user-select: none; }
+th.sortable:hover { color: var(--primary); background: var(--primary-soft); }
+th.sortable .arrow { margin-left: 3px; font-size: 10px; opacity: .35; }
+th.sortable.asc .arrow, th.sortable.desc .arrow { opacity: 1; color: var(--primary); }
+th.sortable.asc, th.sortable.desc {
+  color: var(--primary); background: var(--primary-soft);
+  box-shadow: inset 0 -2px 0 var(--primary);
+}
+th.sortable.asc .arrow::after { content: '▲'; }
+th.sortable.desc .arrow::after { content: '▼'; }
+th.sortable .arrow::after { content: '↕'; }
+td { padding: 7px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+#block-panel tbody tr { cursor: pointer; transition: background .12s ease; }
+#block-panel tbody tr:hover td { background: var(--hover); }
+/* 整行统一底色，避免每格渐变割裂 */
+#block-panel tbody tr.active td {
+  background: var(--primary-soft);
+  border-bottom-color: var(--primary);
+}
+#block-panel tbody tr.active td:first-child {
+  font-weight: 700;
+  color: var(--primary-text);
+  box-shadow: inset 3px 0 0 var(--primary);
+}
+#block-panel tbody tr.active:hover td {
+  background: var(--primary-soft);
+}
+#stock-panel tbody tr { cursor: pointer; transition: background .12s ease; }
+#stock-panel tbody tr:hover td { background: var(--surface-2); }
+#stock-panel tbody tr.active td {
+  background: var(--primary-soft);
+  border-bottom-color: var(--primary);
+}
+#stock-panel tbody tr.active td:first-child {
+  box-shadow: inset 3px 0 0 var(--primary);
+}
+#stock-panel tbody tr.active:hover td { background: var(--primary-soft); }
+.stock-link {
+  color: inherit; text-decoration: none; border-bottom: 1px dashed transparent;
+  cursor: pointer; font-weight: 600;
+}
+.stock-link:hover { color: var(--primary); border-bottom-color: var(--primary); }
+.code.stock-link { font-weight: 500; color: var(--muted); }
+.code.stock-link:hover { color: var(--primary); }
+/* stock detail (in-panel drill-in) */
+#stock-card { position: relative; overflow: hidden; }
+.stock-list-view {
+  display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; height: 100%;
+}
+.stock-list-view.hidden { display: none; }
+.stock-detail {
+  display: none; flex-direction: column; flex: 1 1 auto; min-height: 0; height: 100%;
+  background: var(--card);
+}
+.stock-detail.open { display: flex; }
+.stock-detail-hd {
+  flex: 0 0 auto;
+  display: flex; align-items: center; gap: 8px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border); font-size: 13px; font-weight: 650;
+  background: linear-gradient(180deg, var(--card), var(--surface-2));
+}
+.stock-detail-back {
+  display: inline-flex; align-items: center; gap: 2px;
+  height: 28px; padding: 0 10px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--card);
+  color: var(--muted); font-size: 12px; font-weight: 600; cursor: pointer;
+  flex-shrink: 0;
+}
+.stock-detail-back:hover { color: var(--primary); border-color: var(--primary); background: var(--primary-soft); }
+.stock-detail-nav { display: flex; align-items: center; gap: 2px; flex: 1; min-width: 0; }
+.stock-detail-nav-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; border-radius: 999px;
+  cursor: pointer; font-size: 16px; line-height: 1; padding: 0;
+  color: var(--muted); background: transparent; border: 1px solid transparent;
+  transition: all .15s ease;
+}
+.stock-detail-nav-btn:hover { color: var(--primary); background: var(--primary-soft); border-color: var(--primary); }
+.stock-detail-nav-btn:disabled { opacity: .25; cursor: not-allowed; pointer-events: none; }
+.stock-detail-select {
+  flex: 1; min-width: 60px; max-width: 180px; height: 26px;
+  padding: 0 6px; border: 1px solid var(--border); border-radius: 6px;
+  font-size: 11px; background: var(--card); color: var(--text); cursor: pointer;
+}
+.stock-detail-select:hover { border-color: var(--primary); }
+.stock-detail-hd .actions { display: flex; gap: 4px; flex-shrink: 0; align-items: center; }
+.stock-detail-ext {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; border-radius: 999px;
+  text-decoration: none; font-size: 15px; line-height: 1;
+  color: var(--muted); background: transparent; border: 1px solid transparent;
+}
+.stock-detail-ext:hover { color: var(--primary); background: var(--primary-soft); border-color: var(--primary); }
+  .stock-detail-bd {
+    flex: 1 1 auto; min-height: 0; position: relative; background: var(--card);
+    overflow: hidden;
+    /* 资料页缩放：默认 100% 清晰，由 --ths-scale-user 控制 */
+    --ths-scale: var(--ths-scale-user, 1);
+  }
+  .stock-detail-bd iframe {
+    position: absolute; top: 0; left: 0;
+    border: 0; background: var(--card); display: none;
+    width: calc(100% / var(--ths-scale));
+    height: calc(100% / var(--ths-scale));
+    transform: scale(var(--ths-scale));
+    transform-origin: 0 0;
+  }
+  .stock-detail-bd iframe.active { display: block; }
+.stock-detail-loading {
+  position: absolute; inset: 0; z-index: 2;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
+  color: var(--muted); font-size: 13px; background: var(--card, #fff);
+  pointer-events: none; opacity: 0; transition: opacity .15s ease;
+}
+  .stock-detail.loading .stock-detail-loading { opacity: 1; pointer-events: auto; }
+  .stock-detail-loading .spinner {
+    width: 28px; height: 28px; border: 3px solid var(--border, #e2e8f0); border-top-color: var(--primary);
+    border-radius: 50%; animation: spin .7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .stock-detail-loading .load-text {
+    font-size: 13px; font-weight: 500; color: var(--muted); text-align: center;
+    max-width: 260px; line-height: 1.45;
+  }
+  .stock-detail-loading .load-actions {
+    display: inline-flex; align-items: center; gap: 8px;
+    margin-top: 2px; padding: 4px;
+    background: var(--hover, #f1f5f9);
+    border: 1px solid var(--border, #e2e8f0);
+    border-radius: 999px;
+    pointer-events: auto;
+  }
+  .stock-detail-loading .load-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    height: 30px; padding: 0 14px;
+    border-radius: 999px; border: 1px solid transparent;
+    font-family: inherit; font-size: 12px; font-weight: 600;
+    line-height: 1; text-decoration: none; cursor: pointer;
+    color: var(--text); background: transparent;
+    transition: background .12s ease, color .12s ease, border-color .12s ease;
+  }
+  .stock-detail-loading .load-btn:hover {
+    background: var(--card, #fff);
+    color: var(--primary);
+    border-color: var(--primary);
+  }
+  .stock-detail-loading .load-btn.primary {
+    background: var(--primary);
+    color: #fff;
+    border-color: transparent;
+  }
+  .stock-detail-loading .load-btn.primary:hover {
+    filter: brightness(.96);
+    color: #fff;
+    border-color: transparent;
+  }
+  /* 涨停/炸板 · 个股明细内 K线/详情 */
+  .pool-detail {
+    display: flex; flex-direction: column; height: 100%; min-height: 0;
+  }
+  .pool-detail-tabs {
+    flex: 0 0 auto;
+    display: flex; gap: 0; padding: 6px 10px;
+    border-bottom: 1px solid var(--border); background: var(--surface-2);
+  }
+  .pool-detail-tabs .tab-switch { flex: 0 0 auto; }
+  .pool-detail-tabs .tab-btn { padding: 5px 14px; font-size: 12px; }
+  .pool-detail-body {
+    flex: 1 1 auto; min-height: 0; position: relative; overflow: hidden;
+  }
+  .pool-detail-pane {
+    display: none; position: absolute; inset: 0;
+    overflow: auto; -webkit-overflow-scrolling: touch;
+  }
+  .pool-detail-pane.active { display: block; }
+  .pool-detail-pane.pane-kline {
+    overflow: hidden; background: var(--card);
+    --ths-scale: var(--ths-scale-user, 1);
+  }
+  .pool-detail-pane.pane-kline iframe {
+    position: absolute; top: 0; left: 0; border: 0; background: var(--card);
+    width: calc(100% / var(--ths-scale));
+    height: calc(100% / var(--ths-scale));
+    transform: scale(var(--ths-scale));
+    transform-origin: 0 0;
+  }
+  .pool-detail-pane.pane-info { padding: 0; }
+  #stock-panel:has(.pool-detail) {
+    display: flex; flex-direction: column; overflow: hidden; padding: 0;
+  }
+  #stock-panel:has(.pool-detail) > .pool-detail { flex: 1 1 auto; min-height: 0; }
+  .num { font-family: ui-monospace, 'SF Mono', Consolas, monospace; text-align: right; white-space: nowrap; }
+.code { font-family: ui-monospace, Consolas, monospace; color: var(--muted); font-size: 12px; }
+.up { color: var(--up); font-weight: 600; }
+.down { color: var(--down); font-weight: 600; }
+.tag {
+  display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 4px;
+  background: var(--hover); color: var(--muted); margin: 1px 3px 1px 0; white-space: nowrap;
+}
+.tag.first { background: var(--err-bg); color: var(--up); }
+.tag.back { background: var(--ok-bg); color: var(--down); }
+.tag.down { background: var(--ok-bg); color: var(--down); font-weight: 600; }
+.reason {
+  max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--muted); font-size: 12px;
+}
+.page-nav { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 10px 12px; }
+.page-nav .btn { height: 28px; padding: 0 12px; font-size: 12px; }
+.page-info { font-size: 12px; color: var(--muted); }
+.scroll-more {
+  text-align: center; padding: 12px; font-size: 12px; color: var(--muted);
+}
+.raw-toggle {
+  display: inline-block; margin: 8px 12px 12px; font-size: 12px; color: var(--primary);
+  cursor: pointer; text-decoration: underline; user-select: none;
+}
+.raw {
+  display: none; margin: 0 12px 12px; padding: 10px; border-radius: 8px; max-height: 280px; overflow: auto;
+  background: #0f172a; color: #e2e8f0; font: 11px/1.5 ui-monospace, Consolas, monospace;
+  white-space: pre-wrap; word-break: break-all;
+}
+.raw.open { display: block; }
+
+/* —— export modal —— */
+.modal-mask {
+  display: none; position: fixed; inset: 0; z-index: 80;
+  background: rgba(15, 23, 42, .4);
+  align-items: center; justify-content: center; padding: 16px;
+}
+.modal-mask.open { display: flex; }
+.modal {
+  width: min(400px, 100%); background: var(--card); border: 1px solid var(--border);
+  border-radius: 14px; box-shadow: 0 16px 40px rgba(15, 23, 42, .2); overflow: hidden;
+}
+.modal-hd {
+  padding: 14px 16px; font-size: 14px; font-weight: 700;
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(180deg, var(--card), var(--surface-2));
+}
+.modal-bd { padding: 14px 16px; }
+.modal-hint { font-size: 12px; color: var(--muted); margin-bottom: 12px; line-height: 1.45; }
+.export-opts { display: flex; flex-direction: column; gap: 8px; }
+.export-opt {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px;
+  cursor: pointer; background: var(--card); transition: border-color .12s, background .12s;
+}
+.export-opt:hover { border-color: var(--primary); background: var(--primary-soft); }
+.export-opt input { margin-top: 2px; accent-color: var(--primary); }
+.export-opt .opt-body { flex: 1; min-width: 0; }
+.export-opt .opt-title { font-size: 13px; font-weight: 650; color: var(--text); }
+.export-opt .opt-desc { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.modal-ft {
+  display: flex; justify-content: flex-end; gap: 8px;
+  padding: 12px 16px; border-top: 1px solid var(--border); background: var(--surface-2);
+}
+.modal-ft .btn { height: 32px; padding: 0 14px; font-size: 12px; font-weight: 600; border-radius: 999px; }
+
+/* 表格容器横向滚动（移动端宽表） */
+.card-bd { -webkit-overflow-scrolling: touch; }
+.table-wrap {
+  width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch;
+}
+
+@media (max-width: 1200px) {
+  .layout { grid-template-columns: minmax(180px, 0.6fr) minmax(280px, 1.25fr) minmax(0, 1.35fr); }
+  .brand .sub { display: none; }
+  .tab-btn { padding: 6px 12px; font-size: 12px; }
+}
+@media (max-width: 960px) {
+  body { height: auto; min-height: 100vh; min-height: 100dvh; overflow: auto; padding-bottom: max(12px, env(safe-area-inset-bottom)); }
+  .layout {
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: minmax(180px, 30vh) minmax(300px, 48vh);
+  }
+  #event-card { grid-column: 1 / -1; }
+  .top-main { gap: 8px; }
+  .toolbar { width: 100%; justify-content: flex-start; }
+  .menu-panel { right: 0; left: auto; width: min(420px, calc(100vw - 16px)); }
+}
+@media (max-width: 640px) {
+  body {
+    padding: 0 8px max(8px, env(safe-area-inset-bottom));
+    height: auto; min-height: 100vh; min-height: 100dvh; overflow: auto;
+  }
+  .app-nav {
+    margin: 0 -8px 8px;
+    padding: 0 8px;
+    padding-top: env(safe-area-inset-top);
+  }
+  .app-nav-inner { height: 40px; gap: 10px; }
+  .app-logo { font-size: 13px; }
+  .app-nav-link { height: 28px; padding: 0 10px; font-size: 11px; }
+
+  .top { margin-bottom: 8px; }
+  .top-main {
+    flex-direction: column; align-items: stretch; gap: 8px;
+  }
+  .brand { justify-content: space-between; }
+  .brand h1 { font-size: 16px; }
+  .toolbar {
+    --tb-h: 32px;
+    --tb-fs: 12px;
+    width: 100%;
+    border-radius: 12px;
+    padding: 6px;
+    gap: 6px;
+  }
+  .date-nav { flex: 1 1 auto; min-width: 0; }
+  .date-nav select.nav-ctl { min-width: 0; flex: 1; max-width: 130px; }
+  .date-nav input[type=date].nav-ctl {
+    min-width: 0; width: 118px; flex: 0 0 auto; padding: 0 6px;
+  }
+  .day-badge { padding: 0 8px; font-size: 11px; }
+  .status { display: none; }
+  .menu-panel {
+    position: fixed; top: auto; bottom: 0; left: 0; right: 0;
+    width: 100%; max-height: min(78vh, 640px);
+    border-radius: 16px 16px 0 0;
+    box-shadow: 0 -8px 32px rgba(15, 23, 42, .18);
+    overflow: auto;
+  }
+  #prompt-text { min-height: 140px; }
+
+  .layout {
+    grid-template-columns: 1fr;
+    grid-template-rows: none;
+    gap: 8px;
+  }
+  #event-card,
+  #block-card,
+  #stock-card {
+    grid-column: auto;
+    min-height: 0;
+  }
+  #event-card { min-height: 200px; max-height: 36vh; }
+  #block-card { min-height: 240px; max-height: 48vh; }
+  #stock-card { min-height: 280px; max-height: none; }
+
+  .card-hd {
+    padding: 8px 10px; font-size: 12px; gap: 6px; flex-wrap: wrap;
+  }
+  .card-hd .meta { font-size: 10px; padding: 2px 6px; }
+  .tab-switch {
+    flex: 1 1 auto; min-width: 0; overflow-x: auto;
+    -webkit-overflow-scrolling: touch; scrollbar-width: none;
+  }
+  .tab-switch::-webkit-scrollbar { display: none; }
+  .tab-btn {
+    flex: 1 0 auto; padding: 6px 10px; font-size: 12px;
+    white-space: nowrap;
+  }
+  .card-bd { overflow: auto; -webkit-overflow-scrolling: touch; }
+  .filter-bar { padding: 6px 8px; gap: 4px; }
+  .chip { padding: 4px 10px; font-size: 11px; min-height: 28px; }
+
+  table { font-size: 12px; min-width: 100%; }
+  th, td { padding: 8px 8px; }
+  th { font-size: 11px; }
+  .reason { max-width: 72px; }
+  .num { font-size: 12px; }
+  .tag { font-size: 10px; padding: 1px 5px; }
+
+  /* 涨停/炸板宽表：横向滚动，核心列优先可见 */
+  #block-panel table { min-width: 560px; }
+  #stock-panel table { min-width: 0; width: 100%; }
+  #stock-panel th { width: 84px; white-space: nowrap; }
+  #stock-panel td { word-break: break-word; white-space: normal; }
+
+  .ev-item { padding: 10px 8px; }
+  .ev-title { font-size: 13px; -webkit-line-clamp: 3; }
+  .ev-dir { max-width: 72px; font-size: 10px; }
+  .ev-heat { min-width: 40px; font-size: 11px; }
+
+  .stock-detail.open {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    height: 100%;
+    height: 100dvh;
+    border-radius: 0;
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .stock-detail-hd {
+    padding: 8px 10px; gap: 6px; flex-wrap: wrap;
+  }
+  .stock-detail-back { height: 32px; padding: 0 12px; }
+  .stock-detail-nav { width: 100%; order: 3; flex: 1 1 100%; }
+  .stock-detail-select { max-width: none; flex: 1; height: 32px; font-size: 12px; }
+  .stock-detail-nav-btn { width: 32px; height: 32px; }
+  .stock-detail-ext { width: 32px; height: 32px; }
+  .stock-detail-bd { flex: 1; min-height: 0; }
+
+  .scroll-more { padding: 14px 10px; font-size: 12px; }
+  .msg { margin: 10px; font-size: 12px; }
+  .msg.loading { padding: 28px 10px; }
+}
+@media (max-width: 380px) {
+  .day-badge { display: none; }
+  .date-nav input[type=date].nav-ctl { width: 108px; }
+  .brand h1 { font-size: 15px; }
+  #block-card { max-height: 44vh; }
+  #event-card { max-height: 32vh; }
+  .tab-btn { padding: 6px 8px; font-size: 11px; }
+}
+
+/* —— skeleton —— */
+.skel {
+  padding: 12px; display: flex; flex-direction: column; gap: 10px;
+}
+.skel-row {
+  height: 14px; border-radius: 6px;
+  background: linear-gradient(90deg, var(--surface-2) 25%, var(--border) 50%, var(--surface-2) 75%);
+  background-size: 200% 100%;
+  animation: skel-shine 1.2s ease-in-out infinite;
+}
+.skel-row.lg { height: 18px; width: 60%; }
+.skel-row.sm { height: 12px; width: 40%; }
+@keyframes skel-shine {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* —— toast —— */
+.toast-wrap {
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+  z-index: 100; display: flex; flex-direction: column; gap: 8px; pointer-events: none;
+}
+.toast {
+  pointer-events: auto;
+  background: #0f172a; color: #f8fafc; font-size: 13px; font-weight: 500;
+  padding: 10px 16px; border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(15,23,42,.25);
+  opacity: 0; transform: translateY(8px);
+  transition: opacity .2s, transform .2s;
+  max-width: min(360px, calc(100vw - 32px));
+}
+.toast.show { opacity: 1; transform: translateY(0); }
+.toast.ok { background: #065f46; }
+.toast.err { background: #991b1b; }
+
+/* —— card tools —— */
+.card-hd .hd-actions { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.btn-mini {
+  height: 24px; padding: 0 10px; border-radius: 999px; font-size: 11px; font-weight: 600;
+  border: 1px solid var(--border); background: var(--card); color: var(--muted); cursor: pointer;
+}
+.btn-mini:hover { color: var(--primary); border-color: var(--primary); background: var(--primary-soft); }
+.btn-mini.primary { background: var(--primary); color: #fff; border-color: transparent; }
+.btn-mini.primary:hover { filter: brightness(.96); color: #fff; }
+
+/* event collapse */
+.event-card-collapsed .card-bd { display: none; }
+.event-card-collapsed { flex: 0 0 auto !important; min-height: 0 !important; }
+#event-toggle {
+  height: 24px; width: 24px; border-radius: 6px; border: 1px solid var(--border);
+  background: var(--card); color: var(--muted); cursor: pointer; font-size: 12px; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+#event-toggle:hover { color: var(--primary); border-color: var(--primary); }
+
+/* —— scrollbars —— */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #475569 transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px; height: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: #475569;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+html.light * { scrollbar-color: #94a3b8 transparent; }
+html.light *::-webkit-scrollbar-thumb { background: #94a3b8; }
+html.light *::-webkit-scrollbar-thumb:hover { background: #64748b; }
+
+
+/* B · light mode residual fixes */
+html.light .switch-ui { background: #cbd5e1; }
+html.light .switch input:checked + .switch-ui { background: var(--primary); }
+html.light * { scrollbar-color: #94a3b8 transparent; }
+html.light .btn { color: #fff; }
+html.light .btn.ghost { color: var(--text); }
+html.light .load-btn.primary { color: #fff; }
+
+/* dark mode (legacy overrides; theme via :root / html.light) */
+html.dark {
+  color-scheme: dark;
+  --bg: #0b1220;
+  --card: #151d2e;
+  --text: #e8eef7;
+  --muted: #8b9bb4;
+  --border: #2a3548;
+  --hover: #1c2738;
+  --primary: #60a5fa;
+  --accent: #a78bfa;
+  --up: #f87171;
+  --down: #4ade80;
+  --warn-bg: #3b2a0a;
+  --warn-bd: #854d0e;
+  --warn-fg: #fde68a;
+  --err-bg: #3f1212;
+  --err-fg: #fca5a5;
+  --surface-2: #1a2333;
+  --surface-3: #0f1624;
+  --chip-bg: #1a2333;
+  --input-bg: #0f1624;
+}
+html.dark * {
+  scrollbar-color: #475569 transparent;
+}
+html.dark *::-webkit-scrollbar-track {
+  background: transparent;
+}
+html.dark *::-webkit-scrollbar-thumb {
+  background: #475569;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+html.dark *::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+html.dark *::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+html.dark body { background: var(--bg); color: var(--text); }
+
+/* surfaces */
+html.dark .app-nav,
+html.dark .card,
+html.dark .toolbar,
+html.dark .menu-panel,
+html.dark .modal,
+html.dark .stock-detail {
+  background: var(--card);
+  border-color: var(--border);
+  color: var(--text);
+  box-shadow: none;
+}
+html.dark .app-nav { border-bottom-color: var(--border); }
+html.dark .card-hd,
+html.dark .stock-detail-hd,
+html.dark .filter-bar,
+html.dark .menu-tabs,
+html.dark th,
+html.dark .modal-hd,
+html.dark .modal-ft,
+html.dark .pool-detail-tabs {
+  background: var(--surface-2) !important;
+  border-color: var(--border) !important;
+  color: var(--text);
+}
+html.dark .card-hd .meta,
+html.dark .status {
+  background: var(--surface-3) !important;
+  color: var(--muted) !important;
+  border-color: var(--border) !important;
+}
+
+/* text */
+html.dark .app-logo,
+html.dark .brand h1,
+html.dark .tab-btn.active,
+html.dark b,
+html.dark .stock-link {
+  color: var(--text);
+}
+html.dark .brand .sub,
+html.dark .app-nav-link,
+html.dark .tab-btn,
+html.dark .menu-tab,
+html.dark .menu-hint,
+html.dark .code,
+html.dark .reason,
+html.dark .page-info,
+html.dark .scroll-more,
+html.dark .footer-note,
+html.dark .label,
+html.dark .menu-pane label {
+  color: var(--muted);
+}
+html.dark .stock-link:hover,
+html.dark .code.stock-link:hover {
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+}
+
+/* nav / tabs */
+html.dark .app-nav-link:hover,
+html.dark .app-nav-link.active {
+  background: #1e3a5f;
+  color: #93c5fd;
+  border-color: #3b82f6;
+}
+html.dark .tab-switch { background: var(--surface-3); }
+html.dark .tab-btn { color: var(--muted); }
+html.dark .tab-btn.active {
+  background: var(--card);
+  color: var(--text);
+  box-shadow: 0 1px 3px rgba(0,0,0,.35);
+}
+html.dark .tab-btn:hover:not(.active) { color: var(--text); }
+html.dark .menu-tab:hover { color: var(--text); background: var(--card); }
+html.dark .menu-tab.active {
+  color: var(--primary);
+  background: var(--card);
+  box-shadow: inset 0 -2px 0 var(--primary);
+}
+
+/* buttons & controls */
+html.dark .btn {
+  color: #fff;
+}
+html.dark .btn.ghost,
+html.dark .btn-mini,
+html.dark .chip,
+html.dark .nav-ctl,
+html.dark .stock-detail-back,
+html.dark .stock-detail-select,
+html.dark .stock-detail-nav-btn,
+html.dark .stock-detail-ext,
+html.dark #event-toggle,
+html.dark .date-nav button.nav-ctl,
+html.dark .date-nav select.nav-ctl,
+html.dark .date-nav input[type=date].nav-ctl {
+  background: var(--input-bg) !important;
+  color: var(--text) !important;
+  border-color: var(--border) !important;
+}
+html.dark .btn.ghost:hover,
+html.dark .btn-mini:hover,
+html.dark .chip:hover,
+html.dark .nav-ctl:hover,
+html.dark .stock-detail-back:hover,
+html.dark .stock-detail-nav-btn:hover,
+html.dark .stock-detail-ext:hover,
+html.dark #event-toggle:hover,
+html.dark .date-nav button.nav-ctl:not(:disabled):hover {
+  background: #1e3a5f !important;
+  color: #93c5fd !important;
+  border-color: #3b82f6 !important;
+}
+html.dark .chip.active,
+html.dark .btn.ghost.active {
+  background: #1e3a5f !important;
+  color: #93c5fd !important;
+  border-color: #3b82f6 !important;
+}
+html.dark .btn.export { background: var(--accent); color: #fff; }
+html.dark .btn:disabled,
+html.dark .nav-ctl:disabled,
+html.dark .stock-detail-nav-btn:disabled {
+  opacity: .4;
+  color: var(--muted) !important;
+}
+
+/* form fields inside settings */
+html.dark .menu-pane select,
+html.dark .menu-pane input,
+html.dark .menu-pane textarea,
+html.dark #prompt-text {
+  background: var(--input-bg) !important;
+  color: var(--text) !important;
+  border-color: var(--border) !important;
+  caret-color: var(--text);
+}
+html.dark .menu-pane select option {
+  background: var(--card);
+  color: var(--text);
+}
+html.dark input[type=date]::-webkit-calendar-picker-indicator {
+  filter: invert(0.85);
+}
+
+/* tables */
+html.dark th {
+  color: var(--muted) !important;
+  border-bottom-color: var(--border) !important;
+}
+html.dark th.sortable:hover {
+  color: var(--primary) !important;
+  background: #1e3a5f !important;
+}
+html.dark th.sortable.asc,
+html.dark th.sortable.desc {
+  color: var(--primary) !important;
+  background: #1e3a5f !important;
+  box-shadow: inset 0 -2px 0 var(--primary);
+}
+html.dark td {
+  border-bottom-color: var(--border);
+  color: var(--text);
+}
+html.dark #block-panel tbody tr:hover td,
+html.dark #stock-panel tbody tr:hover td {
+  background: var(--hover);
+}
+html.dark #block-panel tbody tr.active td,
+html.dark #stock-panel tbody tr.active td {
+  background: #1e3a5f;
+  border-bottom-color: #3b82f6;
+}
+html.dark #block-panel tbody tr.active td:first-child,
+html.dark #stock-panel tbody tr.active td:first-child {
+  color: #93c5fd;
+  box-shadow: inset 3px 0 0 #3b82f6;
+}
+html.dark #block-panel tbody tr.active:hover td,
+html.dark #stock-panel tbody tr.active:hover td {
+  background: #243b5c;
+}
+
+/* tags */
+html.dark .tag {
+  background: var(--chip-bg);
+  color: var(--muted);
+}
+html.dark .tag.first { background: #3f1212; color: #fca5a5; }
+html.dark .tag.back { background: #052e1c; color: #6ee7b7; }
+html.dark .tag.down { background: #052e1c; color: #6ee7b7; }
+
+/* events */
+html.dark .ev-item:hover { background: var(--hover); }
+html.dark .ev-item + .ev-item { border-top-color: var(--border); }
+html.dark .ev-title { color: var(--text); }
+html.dark .ev-stock { color: var(--muted); }
+html.dark .ev-stock b { color: var(--text); }
+html.dark .ev-heat { background: #3f1212; color: #fca5a5; }
+html.dark .ev-heat.mid { background: #3b2a0a; color: #fdba74; }
+html.dark .ev-heat.low { background: var(--chip-bg); color: var(--muted); }
+html.dark .ev-dir {
+  background: #1e3a5f;
+  color: #93c5fd;
+  border-color: #3b82f6;
+}
+
+/* detail / loading */
+html.dark .msg.loading,
+html.dark .stock-detail-loading {
+  background: var(--card);
+  color: var(--muted);
+}
+html.dark .stock-detail-bd,
+html.dark .pool-detail-pane.pane-kline {
+  background: var(--surface-3);
+}
+html.dark .stock-detail-loading .spinner {
+  border-color: var(--border);
+  border-top-color: var(--primary);
+}
+html.dark .stock-detail-loading .load-actions {
+  background: var(--surface-3, #0f1624);
+  border-color: var(--border);
+}
+html.dark .stock-detail-loading .load-btn {
+  color: var(--text);
+}
+html.dark .stock-detail-loading .load-btn:hover {
+  background: #1e3a5f;
+  color: #93c5fd;
+  border-color: #3b82f6;
+}
+html.dark .stock-detail-loading .load-btn.primary {
+  background: var(--primary);
+  color: #fff;
+}
+html.dark .stock-detail-loading .load-btn.primary:hover {
+  filter: brightness(1.08);
+  color: #fff;
+  border-color: transparent;
+}
+html.dark .skel-row {
+  background: linear-gradient(90deg, #1a2333 25%, #2a3548 50%, #1a2333 75%);
+  background-size: 200% 100%;
+}
+
+/* badges */
+html.dark .day-badge.unknown {
+  background: var(--surface-3);
+  color: var(--muted);
+  border-color: var(--border);
+}
+html.dark .day-badge.is-trade {
+  background: #064e3b;
+  color: #6ee7b7;
+  border-color: #059669;
+}
+html.dark .day-badge.not-trade {
+  background: #450a0a;
+  color: #fca5a5;
+  border-color: #dc2626;
+}
+
+/* modal / export */
+html.dark .modal-mask { background: rgba(2, 6, 23, .72); }
+html.dark .export-opt {
+  background: var(--input-bg);
+  border-color: var(--border);
+  color: var(--text);
+}
+html.dark .export-opt:hover {
+  border-color: #3b82f6;
+  background: #1e3a5f;
+}
+html.dark .export-opt .opt-title { color: var(--text); }
+html.dark .export-opt .opt-desc { color: var(--muted); }
+html.dark .modal-hint { color: var(--muted); }
+
+/* switch track */
+html.dark .switch-ui { background: #475569; }
+html.dark .switch input:checked + .switch-ui { background: var(--primary); }
+
+/* messages */
+html.dark .msg.warn {
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+  border-color: var(--warn-bd);
+}
+html.dark .msg.error {
+  background: var(--err-bg);
+  color: var(--err-fg);
+}
+
+/* raw json block already dark */
+html.dark .raw-toggle { color: var(--primary); }
+
+/* focus */
+html.dark :focus-visible,
+html.dark button:focus-visible,
+html.dark a:focus-visible,
+html.dark select:focus-visible,
+html.dark input:focus-visible {
+  outline-color: #60a5fa;
+}
+html.dark .date-nav .nav-ctl:focus {
+  border-color: #60a5fa;
+  box-shadow: 0 0 0 2px rgba(96, 165, 250, .2);
+}
+
+.footer-note {
+  flex: 0 0 auto; text-align: center; font-size: 11px; color: var(--muted);
+  padding: 6px 0 2px; line-height: 1.4;
+}
+
+@media (max-width: 960px) {
+  #event-card.event-card-collapsed { grid-column: 1 / -1; }
+}
+@media (max-width: 640px) {
+  #event-card:not(.event-card-collapsed) { max-height: 40vh; }
+}
+</style>
+</head>
+<body>
+  <nav class="app-nav">
+    <div class="app-nav-inner">
+      <a class="app-logo" href="limit_up.html">A股工具</a>
+      <div class="app-nav-links">
+        <a class="app-nav-link active" href="limit_up.html">涨停复盘</a>
+         
+      </div>
+    </div>
+  </nav>
+  <header class="top">
+    <div class="top-main">
+      <div class="brand">
+        <h1>涨停复盘</h1>
+        <span class="sub">事件驱动 · 板块 · 个股</span>
+      </div>
+      <div class="toolbar">
+        <div class="date-nav">
+          <button type="button" class="nav-ctl" id="btn-prev" title="上一交易日">←</button>
+          <select class="nav-ctl" id="date-select" title="选择交易日"></select>
+          <input class="nav-ctl" type="date" id="date-picker" title="选择日期">
+          <button type="button" class="nav-ctl" id="btn-next" title="下一交易日">→</button>
+        </div>
+        <span class="day-badge unknown" id="day-badge">判断中...</span>
+        <button type="button" class="btn" id="btn-load">查询</button>
+        <button type="button" class="btn export" id="btn-export" title="导出复盘数据+提示词">导出报告</button>
+        <div class="menu-wrap">
+          <button type="button" class="btn ghost" id="btn-settings" title="设置">设置</button>
+          <div class="menu-panel" id="settings-menu" role="menu">
+            <div class="menu-tabs">
+              <button type="button" class="menu-tab active" data-pane="prompt">复盘提示词</button>
+              <button type="button" class="menu-tab" data-pane="proxy">代理设置</button>
+            </div>
+            <div class="menu-body">
+              <div class="menu-pane active" id="pane-prompt">
+                <label for="prompt-text">导出报告时附带的分析提示词</label>
+                <textarea id="prompt-text"></textarea>
+                <div class="menu-row" style="margin-top:6px">
+                  <button type="button" class="btn ghost" id="btn-prompt-reset">一键还原</button>
+                  <span class="menu-hint" style="margin:0">修改后自动保存</span>
+                </div>
+              </div>
+              <div class="menu-pane" id="pane-proxy">
+                <div class="menu-row">
+                  <label for="proxy-preset">预设</label>
+                  <select id="proxy-preset">
+                    <option value="">直连</option>
+                    <option value="https://cf-proxy.kkkkkkkkk.workers.dev/?">cf-proxy.kkkkkkkkk.workers.dev</option> 
+                  </select>
+                </div>
+                <div class="menu-row">
+                  <label for="proxy-url">前缀</label>
+                  <input id="proxy-url" type="text" placeholder="留空直连，例如 https://cf-proxy.kkkkkkkkk.workers.dev/?">
+                </div>
+                <div class="menu-row">
+                  <label for="tv-toggle">TradingView</label>
+                  <label class="switch">
+                    <input type="checkbox" id="tv-toggle">
+                    <span class="switch-ui"></span>
+                  </label>
+                  <span class="menu-hint" style="margin:0">开：点代码新窗口 TV；点名称始终开资料</span>
+                </div>
+                <div class="menu-row">
+                  <label for="ths-page-ver">个股页版本</label>
+                  <select id="ths-page-ver" title="同花顺资料页">
+                    <option value="mobile">手机版（适配侧栏）</option>
+                    <option value="desktop">桌面版</option>
+                  </select>
+                  <span class="menu-hint" style="margin:0">手机版带市场前缀，更贴容器</span>
+                </div>
+                <div class="menu-row">
+                  <label for="ths-scale">个股页缩放</label>
+                  <select id="ths-scale" title="同花顺资料页显示比例">
+                    <option value="1">100%（最清晰）</option>
+                    <option value="0.9">90%</option>
+                    <option value="0.8">80%（更紧凑）</option>
+                  </select>
+                  <span class="menu-hint" style="margin:0">默认 100%，避免文字发糊</span>
+                </div>
+                <div class="menu-row">
+                  <label for="dark-toggle">暗色模式</label>
+                  <label class="switch">
+                    <input type="checkbox" id="dark-toggle">
+                    <span class="switch-ui"></span>
+                  </label>
+                  <span class="menu-hint" style="margin:0">默认暗色（B）；仅外壳，同花顺页不跟随</span>
+                </div>
+                <p class="menu-hint">浏览器直连同花顺接口可能 403/CORS，推荐配置代理后重试。</p>
+                <p class="menu-hint">快捷键：← → 切换个股 · Esc 关闭详情 · 设置自动保存</p>
+              </div>
+              <div class="menu-actions">
+                <button type="button" class="btn ghost" id="btn-settings-close">关闭</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <span class="status" id="status"></span>
+      </div>
+    </div>
+  </header>
+
+  <main class="layout" id="layout">
+    <section class="card" id="event-card">
+      <div class="card-hd">
+        <span>热点事件</span>
+        <span class="meta" id="event-meta"></span>
+        <div class="hd-actions">
+          <button type="button" id="event-toggle" title="折叠/展开">▾</button>
+        </div>
+      </div>
+      <div class="card-bd" id="event-panel"><div class="msg loading">加载中...</div></div>
+    </section>
+    <section class="card" id="block-card">
+      <div class="card-hd">
+        <div class="tab-switch" id="block-tabs">
+          <button type="button" class="tab-btn active" data-view="block">板块排行</button>
+          <button type="button" class="tab-btn" data-view="limitUp">涨停</button>
+          <button type="button" class="tab-btn" data-view="openLimit">炸板</button>
+          <button type="button" class="tab-btn" data-view="limitDown">跌停</button>
+        </div>
+        <span class="meta" id="block-meta"></span>
+      </div>
+      <div class="card-bd" id="block-panel"><div class="msg loading">准备中...</div></div>
+    </section>
+    <section class="card" id="stock-card">
+      <div class="stock-list-view" id="stock-list-view">
+        <div class="card-hd">
+          <span>个股明细</span>
+          <span class="meta" id="stock-meta"></span>
+          <div class="hd-actions">
+            <button type="button" class="btn-mini" id="btn-copy-codes" title="复制当前列表代码">复制代码</button>
+          </div>
+        </div>
+        <div class="filter-bar" id="tag-filters" hidden></div>
+        <div class="card-bd" id="stock-panel"><div class="msg loading">选择板块</div></div>
+      </div>
+      <div class="stock-detail" id="stock-detail" aria-hidden="true">
+        <div class="stock-detail-hd">
+          <button type="button" class="stock-detail-back" id="stock-detail-back">返回</button>
+          <div class="stock-detail-nav">
+            <button type="button" class="stock-detail-nav-btn" id="stock-detail-prev" title="上一个">‹</button>
+            <select class="stock-detail-select" id="stock-detail-select"></select>
+            <button type="button" class="stock-detail-nav-btn" id="stock-detail-next" title="下一个">›</button>
+          </div>
+          <div class="actions">
+            <a class="stock-detail-ext" id="stock-detail-ext" href="#" target="_blank" rel="noopener" title="新窗口打开">↗</a>
+          </div>
+        </div>
+        <div class="stock-detail-bd" id="stock-detail-bd">
+          <div class="stock-detail-loading" id="stock-detail-loading">
+            <div class="spinner"></div>
+            <span class="load-text">加载同花顺资料...</span>
+            <div class="load-actions" hidden>
+              <button type="button" class="load-btn" id="btn-detail-retry">重试</button>
+              <a class="load-btn primary" id="btn-detail-newwin" href="#" target="_blank" rel="noopener">新窗口打开</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+  <p class="footer-note">数据来源：同花顺公开接口 · 仅供学习研究，不构成投资建议</p>
+  <div class="toast-wrap" id="toast-wrap" aria-live="polite"></div>
+
+  <div class="modal-mask" id="export-modal" aria-hidden="true">
+    <div class="modal" role="dialog" aria-labelledby="export-modal-title">
+      <div class="modal-hd" id="export-modal-title">导出报告数据范围</div>
+      <div class="modal-bd">
+        <p class="modal-hint">当前为池子视图，请选择要导出的数据：</p>
+        <div class="export-opts">
+          <label class="export-opt">
+            <input type="radio" name="export-scope" value="both" checked>
+            <span class="opt-body">
+              <span class="opt-title">涨停 + 炸板</span>
+              <span class="opt-desc">同时导出当日涨停池与炸板池名单</span>
+            </span>
+          </label>
+          <label class="export-opt">
+            <input type="radio" name="export-scope" value="all">
+            <span class="opt-body">
+              <span class="opt-title">涨停 + 炸板 + 跌停</span>
+              <span class="opt-desc">导出三池完整名单</span>
+            </span>
+          </label>
+          <label class="export-opt">
+            <input type="radio" name="export-scope" value="limitUp">
+            <span class="opt-body">
+              <span class="opt-title">仅涨停</span>
+              <span class="opt-desc">只导出涨停池数据</span>
+            </span>
+          </label>
+          <label class="export-opt">
+            <input type="radio" name="export-scope" value="openLimit">
+            <span class="opt-body">
+              <span class="opt-title">仅炸板</span>
+              <span class="opt-desc">只导出炸板池数据</span>
+            </span>
+          </label>
+          <label class="export-opt">
+            <input type="radio" name="export-scope" value="limitDown">
+            <span class="opt-body">
+              <span class="opt-title">仅跌停</span>
+              <span class="opt-desc">只导出跌停池数据</span>
+            </span>
+          </label>
+        </div>
+      </div>
+      <div class="modal-ft">
+        <button type="button" class="btn ghost" id="export-modal-cancel">取消</button>
+        <button type="button" class="btn export" id="export-modal-ok">导出</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+(() => {
+  'use strict';
+
+  const API = {
+    tradeDay: (date) =>
+      `https://data.10jqka.com.cn/dataapi/limit_up/trade_day?stock=stock&prev=120&next=30&date=${date}`,
+    blockTop: (date) =>
+      `https://data.10jqka.com.cn/dataapi/limit_up/block_top?filter=HS,GEM2STAR&date=${date}`,
+    openLimitPool: (date, page = 1, limit = 15) =>
+      `https://data.10jqka.com.cn/dataapi/limit_up/open_limit_pool?page=${page}&limit=${limit}&field=199112,9002,48,1968584,19,3475914,9003,9001,10,9004&filter=HS,GEM2STAR&order_field=199112&order_type=0&date=${date}`,
+    limitUpPool: (date, page = 1, limit = 15) =>
+      `https://data.10jqka.com.cn/dataapi/limit_up/limit_up_pool?page=${page}&limit=${limit}&field=199112,10,9001,330323,330324,330325,9002,330329,133971,133970,1968584,3475914,9003,9004&filter=HS,GEM2STAR&date=${date}&order_field=330324&order_type=0`,
+    lowerLimitPool: (date, page = 1, limit = 15) =>
+      `https://data.10jqka.com.cn/dataapi/limit_up/lower_limit_pool?page=${page}&limit=${limit}&field=199112,10,9001,330323,330324,330325,9002,330329,133971,133970,1968584,3475914,9003,9004&filter=HS,GEM2STAR&order_field=199112&order_type=0&date=${date}`,
+    eventList: () =>
+      `https://news.10jqka.com.cn/app/concept_v2_api/open/api/concept/event/jtcsm/v1/event/list`,
+  };
+  const MARKET = { HS: '沪深', GEM: '创业板', STAR: '科创板' };
+  const CHANGE_TAG = {
+    FIRST_LIMIT: { label: '首板', cls: 'first' },
+    LIMIT_BACK: { label: '回封', cls: 'back' },
+    LIMIT_DOWN: { label: '跌停', cls: 'down' },
+    LIMIT_FAILED: { label: '炸板', cls: 'back' },
+  };
+  const POOL_KINDS = {
+    limitUp: { label: '涨停', dataKey: 'limitUpData', loadingKey: 'limitUpLoading', api: (...a) => API.limitUpPool(...a) },
+    openLimit: { label: '炸板', dataKey: 'openLimitData', loadingKey: 'openLimitLoading', api: (...a) => API.openLimitPool(...a) },
+    limitDown: { label: '跌停', dataKey: 'limitDownData', loadingKey: 'limitDownLoading', api: (...a) => API.lowerLimitPool(...a) },
+  };
+
+  const $ = (id) => document.getElementById(id);
+  const els = {
+    proxyPreset: $('proxy-preset'),
+    proxyUrl: $('proxy-url'),
+    tvToggle: $('tv-toggle'),
+    btnPrev: $('btn-prev'),
+    btnNext: $('btn-next'),
+    btnLoad: $('btn-load'),
+    btnExport: $('btn-export'),
+    btnSettings: $('btn-settings'),
+    btnSettingsClose: $('btn-settings-close'),
+    settingsMenu: $('settings-menu'),
+    promptText: $('prompt-text'),
+    dateSelect: $('date-select'),
+    datePicker: $('date-picker'),
+    dayBadge: $('day-badge'),
+    status: $('status'),
+    blockMeta: $('block-meta'),
+    stockMeta: $('stock-meta'),
+    blockPanel: $('block-panel'),
+    stockPanel: $('stock-panel'),
+    stockCard: $('stock-card'),
+    tagFilters: $('tag-filters'),
+    eventPanel: $('event-panel'),
+    eventMeta: $('event-meta'),
+    eventCard: $('event-card'),
+    stockListView: $('stock-list-view'),
+    stockDetail: $('stock-detail'),
+    stockDetailBack: $('stock-detail-back'),
+    stockDetailBd: $('stock-detail-bd'),
+    stockDetailExt: $('stock-detail-ext'),
+    stockDetailPrev: $('stock-detail-prev'),
+    stockDetailNext: $('stock-detail-next'),
+    stockDetailSelect: $('stock-detail-select'),
+    exportModal: $('export-modal'),
+    exportModalCancel: $('export-modal-cancel'),
+    exportModalOk: $('export-modal-ok'),
+    thsScale: $('ths-scale'),
+    thsPageVer: $('ths-page-ver'),
+    darkToggle: $('dark-toggle'),
+    eventToggle: $('event-toggle'),
+    eventCard: $('event-card'),
+    btnCopyCodes: $('btn-copy-codes'),
+    stockDetailLoading: $('stock-detail-loading'),
+    btnDetailRetry: $('btn-detail-retry'),
+    btnDetailNewwin: $('btn-detail-newwin'),
+    toastWrap: $('toast-wrap'),
+  };
+
+  const state = {
+    dates: [],
+    index: -1,
+    date: '',
+    today: '',
+    todayIsTradeDay: null,
+    dateIsTradeDay: null,
+    tradeDayMap: {},
+    blocks: [],
+    selected: -1,
+    rawBlock: null,
+    events: [],
+    eventRaw: null,
+    loading: false,
+    blockSort: { key: 'limitUpNum', dir: 'desc' },
+    stockSort: { key: 'firstTime', dir: 'asc' },
+    tagFilter: 'all',
+    stockNavList: [],
+    stockNavIndex: -1,
+    blockView: 'block', // 'block' | 'limitUp' | 'openLimit' | 'limitDown'
+    openLimitData: null,
+    openLimitLoading: false,
+    limitUpData: null,
+    limitUpLoading: false,
+    limitDownData: null,
+    limitDownLoading: false,
+    poolSelected: -1,
+    poolDetailTab: 'kline', // 'kline' | 'info' 池子明细 Tab
+    useTradingView: false,
+    thsScale: 1,
+    thsPageVer: 'mobile', // mobile | desktop
+    darkMode: true,
+    heightFilter: 'all', // 连板高度筛选
+    eventCollapsed: false,
+    detailLoadTimer: null,
+  };
+
+  const DEFAULT_PROMPT = `# A股题材板块涨停潮深度复盘与梯队定位分析提示词（HTML报告版）
+
+## 角色设定
+你是一位拥有10年以上A股实战经验的顶级短线题材策略分析师，专精于主题投资、情绪周期和资金行为分析。
+
+## 任务目标
+针对用户提供的某一爆发题材（如商业航天/低空经济/AI）的涨停板名单，进行深度复盘，将个股进行分类分层，识别真伪龙头，并给出下一个交易日的推演预期。
+
+**最终输出要求**：你必须生成一份**完整的、自包含的 HTML 文档**（所有 CSS 内联在 <style> 标签中），以报告形式清晰呈现所有分析结论。该 HTML 应设计为适合直接截图或打印的样式，无需任何外部资源。
+
+## 输入数据要求
+用户将提供该题材的**核心事件驱动逻辑**（一句话概括）以及当日或近期**涨停个股完整名单**（需包含：代码、名称、涨幅、连板数、封板时间、核心涨停概念标签）。
+
+---
+
+## 分析路径与思维链（Chain of Thought）
+请严格按照以下步骤进行推理分析（思考过程不输出，仅输出最终结论，但结论必须基于以下逻辑）：
+
+### 第一步：定性板块生命周期（板块阶段判断）
+- 判断该板块目前处于行情的哪个阶段：**爆发首日**、**高潮次日（分化日）**、**主升加速**、还是**退潮初期**？
+- 观察当日全市场封板率，判断资金整体做多情绪是否存在分歧。
+
+### 第二步：多维定位个股（核心分类框架）
+对名单中的每一只个股，从以下**5个核心维度**进行切割归类：
+
+1. **产业链地位维度**：上游（材料/元器件）、中游（核心制造/总装）、下游（应用/运营）。谁最不可或缺？
+2. **资金地位与市值维度（股性）**：
+   - **中军**（大市值、机构重仓、成交额巨大，机构+游资合力）
+   - **情绪先锋**（小市值、换手率极高、率先封板，游资主导）
+   - **弹性套利**（创业板/科创板小市值，量化+短线）
+   - **后排补涨**（逻辑牵强、启动最晚、封板不坚决，散户跟风）
+3. **逻辑纯正度维度（真假概念）**：
+   - **核心正宗**（实锤公告参与核心环节）
+   - **产业链配套**（供应商但非核心）
+   - **概念叠加/擦边**（历史关联或模糊标签）
+   - **纯情绪标签**（名字、地域、无关业务硬挖）
+4. **日内启动时间与筹码结构**：
+   - 竞价/开盘秒板（9:30前）：最强
+   - 上午共振板（10:00-11:30）：中坚
+   - 午后直线板（13:00-13:30）：跟风
+   - 尾盘偷袭板（14:30后）：⚠️警惕
+5. **业绩与历史瑕疵**：是否有财报预增/扭亏？是否有立案、违规、高管变动？
+
+### 第三步：建立分层梯队（金字塔结构）
+综合第二步，将所有个股划分为以下**五个梯队**：
+- **第一梯队（核心中军）**：大市值、高成交，板块风向标。
+- **第二梯队（核心硬件/关键环节）**：与突破技术直接物理相关，逻辑最硬，易出真龙头。
+- **第三梯队（上游稀缺资源/卖铲人）**：受益于放量，业绩可兑现。
+- **第四梯队（应用/泛产业链延伸）**：陪跑共振，数量最多，淘汰最烈。
+- **第五梯队（边缘蹭热点）**：主业完全无关，退潮时率先A杀。
+
+### 第四步：异常信号诊断（预期差识别）
+- **该强不强**（高危）：核心票连续尾盘板或烂板，存在被卡位风险。
+- **该弱不弱**（强势）：逻辑正且早盘硬板，可能是真龙。
+
+### 第五步：推演下一个交易日预期
+基于以上，给出分类型操作建议：格局/关注、兑现/高抛、规避。
+
+---
+
+## 输出格式要求（必须严格遵守）
+
+你最终输出的**必须是一个完整的 HTML 代码块**，用 \`\`\`html ... \`\`\` 包裹。该 HTML 需满足：
+
+| 要求 | 具体实现 |
+| :--- | :--- |
+| **截图区域标识** | 顶部显示"截图"按钮，"📸 截图区域"提示框，明确边界 |
+| **固定宽度** | 整体容器宽度 \`1000px\` |
+| **单屏可视** | 核心信息集中布局，无需滚动即可完整呈现 |
+| **可读性** | 正文字号 \`≥14px\`，行高 \`≥1.6\` |
+| **风险警示** | 高饱和度红/橙色（\`#E74C3C\` / \`#F39C12\`），对比度 ≥4.5:1 |
+| **水印** | 底部自动生成"YYYY-MM-DD HH:mm:ss"时间水印，便于溯源 |
+
+## 技术选型
+- **html2canvas**（v1.4.1）：最成熟的前端截图库，精确还原 DOM 与 CSS。
+- 纯前端方案，无需服务端支持，用户点击按钮即可下载截图。
+
+1. **内容完整性**：必须包含以下所有章节
+   - 报告标题（含日期、题材名称）
+   - 核心事件驱动（一句话）
+   - 板块生命周期定性
+   - 五梯队分层名单（表格形式，包含个股、核心逻辑、梯队定位、风险提示）
+   - 异常信号诊断（重点个股点评）
+   - 下个交易日操作预期（按梯队或个股分别说明）
+   - 特别风险警示（最危险的特征）
+
+2. **样式要求（必须与客户端页面风格一致）**：
+   - 使用以下 CSS 变量体系，保持与客户页面风格统一：
+     \`\`\`css
+     :root { --bg: #e8edf5; --card: #fff; --text: #0f172a; --muted: #64748b; --border: #e2e8f0; --up: #dc2626; --down: #16a34a; --radius: 12px; }
+     \`\`\`
+   - 卡片：\`background: var(--card); border: 1px solid var(--border); border-radius: var(--radius)\`
+   - 卡片头部：\`padding: 9px 12px; border-bottom: 1px solid #f1f5f9; font-weight: 650; background: linear-gradient(180deg, #fff, #fafbfc)\`
+   - 表格：斑马纹，\`th { background: #f8fafc; font-weight: 600; }\`，\`tbody tr:nth-child(even) { background: #fafbfc; }\`
+   - 涨/跌色：\`var(--up)\`（#dc2626）/ \`var(--down)\`（#16a34a）
+   - 风险警示：红色边框 + 浅红背景（\`border-color: #dc2626; background: #fef2f2\`）
+   - 所有样式内联在 \`<style>\` 中，无需外部资源
+   - 宽度 1000px 居中，打印友好
+
+3. **数据呈现**：
+   - 梯队分层用表格，列明"个股"、"核心逻辑"、"梯队定位"、"风险等级"
+   - 关键个股用 ⭐（龙头）、⚠️（风险）
+   - 代码用等宽字体（\`font-family: ui-monospace, Consolas, monospace\`），涨跌幅右对齐
+
+4. **语言风格**：专业、客观、简洁，结论明确，不模棱两可。`;
+
+  // ---------- utils ----------
+  function todayYmd() {
+    const d = new Date();
+    return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+  }
+  function fmtDate(ymd) {
+    if (!ymd || ymd.length !== 8) return ymd || '--';
+    return `${ymd.slice(0, 4)}-${ymd.slice(4, 6)}-${ymd.slice(6, 8)}`;
+  }
+  function toYmd(iso) { return (iso || '').replace(/-/g, ''); }
+  function toIso(ymd) { return fmtDate(ymd); }
+  function fmtTime(ts) {
+    const n = Number(ts);
+    if (!Number.isFinite(n) || n <= 0) return '-';
+    const d = new Date(n * 1000);
+    return [d.getHours(), d.getMinutes(), d.getSeconds()].map((x) => String(x).padStart(2, '0')).join(':');
+  }
+  function tsNum(ts) {
+    const n = Number(ts);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }
+  function fmtPct(v) {
+    const n = Number(v);
+    return Number.isFinite(n) ? `${n.toFixed(2)}%` : (v == null || v === '' ? '-' : String(v));
+  }
+  function esc(s) {
+    return String(s ?? '')
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+  function downloadBlob(filename, text, mime) {
+    const blob = new Blob([text], { type: mime || 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 1000);
+  }
+  function proxyWrap(url) {
+    const p = els.proxyUrl.value.trim();
+    return p ? p + encodeURIComponent(url) : url;
+  }
+  function saveProxy() {
+    try {
+      localStorage.setItem('limit_up_proxy', els.proxyUrl.value.trim());
+      localStorage.setItem('limit_up_proxy_preset', els.proxyPreset.value);
+    } catch (_) {}
+  }
+  function loadProxy() {
+    try {
+      els.proxyUrl.value = localStorage.getItem('limit_up_proxy') || '';
+      els.proxyPreset.value = localStorage.getItem('limit_up_proxy_preset') || '';
+    } catch (_) {}
+  }
+  function cmp(a, b, dir) {
+    if (a == null && b == null) return 0;
+    if (a == null) return 1;
+    if (b == null) return -1;
+    if (typeof a === 'string' || typeof b === 'string') {
+      const r = String(a).localeCompare(String(b), 'zh-CN');
+      return dir === 'asc' ? r : -r;
+    }
+    const r = Number(a) - Number(b);
+    return dir === 'asc' ? r : -r;
+  }
+  function sortBy(list, key, dir, getter) {
+    return [...list].sort((a, b) => cmp(getter(a, key), getter(b, key), dir));
+  }
+  function sortMark(key, sortState) {
+    if (sortState.key !== key) return '';
+    return sortState.dir;
+  }
+  function thSort(label, key, sortState) {
+    const cls = ['sortable', sortMark(key, sortState)].filter(Boolean).join(' ');
+    return `<th class="${cls}" data-sort="${key}">${esc(label)}<span class="arrow"></span></th>`;
+  }
+
+  // ---------- network / parse ----------
+  function proxyCandidates(url) {
+    const primary = els.proxyUrl.value.trim();
+    const presets = [
+      '',
+      primary,
+      'https://corsproxy.io/?',
+      'https://api.allorigins.win/raw?url=',
+      'https://proxy.cors.sh/',
+    ].filter((v, i, arr) => arr.indexOf(v) === i); // unique, keep order
+    return presets.map((p) => (p ? p + encodeURIComponent(url) : url));
+  }
+
+  async function fetchJsonOnce(fullUrl) {
+    const res = await fetch(fullUrl, {
+      method: 'GET',
+      mode: 'cors',
+      credentials: 'omit',
+      headers: { Accept: 'application/json, text/plain, */*' },
+    });
+    if (!res.ok) {
+      const err = new Error(`HTTP ${res.status}`);
+      err.status = res.status;
+      throw err;
+    }
+    const text = await res.text();
+    try {
+      return JSON.parse(text);
+    } catch (_) {
+      // some proxies wrap as { contents: "..." }
+      try {
+        const wrap = JSON.parse(text);
+        if (wrap && typeof wrap.contents === 'string') return JSON.parse(wrap.contents);
+      } catch (__) {}
+      throw new Error('响应不是 JSON');
+    }
+  }
+
+  async function getJson(url, opts = {}) {
+    const { retryProxy = false } = opts;
+    const list = retryProxy ? proxyCandidates(url) : [proxyWrap(url)];
+    let lastErr = null;
+    for (const full of list) {
+      try {
+        return await fetchJsonOnce(full);
+      } catch (e) {
+        lastErr = e;
+        // only continue when auto-retrying proxies
+        if (!retryProxy) break;
+        if (e.status && e.status !== 403 && e.status !== 429 && e.status < 500) break;
+      }
+    }
+    throw lastErr || new Error('请求失败');
+  }
+
+  function parseTradeDay(json, seed) {
+    const data = json?.data || {};
+    const prev = Array.isArray(data.prev_dates) ? data.prev_dates : [];
+    const next = Array.isArray(data.next_dates) ? data.next_dates : [];
+    const isTrade = data.trade_day === true;
+    const map = {};
+    prev.forEach((d) => { map[d] = true; });
+    next.forEach((d) => { map[d] = true; });
+    map[seed] = isTrade;
+    const dates = [...new Set([...prev, ...next, ...(isTrade ? [seed] : [])])].sort();
+    return { dates, isTrade, map };
+  }
+
+  function isTradeDay(ymd) {
+    if (!ymd) return null;
+    if (Object.prototype.hasOwnProperty.call(state.tradeDayMap, ymd)) return state.tradeDayMap[ymd];
+    return state.dates.includes(ymd) ? true : null;
+  }
+
+  function extractBlockList(json) {
+    if (!json) return null;
+    let cur = json;
+    // 剥掉 { savedAt, data } 包装（最多 4 层）
+    for (let i = 0; i < 4; i++) {
+      if (Array.isArray(cur)) return cur;
+      if (!cur || typeof cur !== 'object') return null;
+      if ('savedAt' in cur && 'data' in cur && cur.data != null) {
+        cur = cur.data;
+        continue;
+      }
+      break;
+    }
+    if (Array.isArray(cur)) return cur;
+    if (Array.isArray(cur?.data)) return cur.data;
+    if (Array.isArray(cur?.data?.data)) return cur.data.data;
+    if (Array.isArray(cur?.list)) return cur.list;
+    if (Array.isArray(cur?.info)) return cur.info;
+    return null;
+  }
+
+  function normalizeBlockJson(json) {
+    const list = extractBlockList(json);
+    if (Array.isArray(list)) return { data: list };
+    // 保留原始对象，便于 raw 调试
+    return json && typeof json === 'object' ? json : null;
+  }
+
+  function parseBlocks(json) {
+    const list = extractBlockList(json);
+    if (!Array.isArray(list)) return [];
+    return list.map((b, i) => {
+      if (!b || typeof b !== 'object') {
+        return {
+          index: i, code: '', name: '-', change: 0, limitUpNum: 0,
+          continuousPlateNum: 0, high: '-', highNum: 0, days: 0, stocks: [],
+        };
+      }
+      return {
+        index: i,
+        code: b.code ?? '',
+        name: b.name ?? '-',
+        change: Number(b.change ?? 0),
+        limitUpNum: Number(b.limit_up_num ?? 0),
+        continuousPlateNum: Number(b.continuous_plate_num ?? 0),
+        high: b.high ?? '-',
+        highNum: Number(b.high_num ?? 0),
+        days: Number(b.days ?? 0),
+        stocks: parseStocks(b.stock_list),
+      };
+    });
+  }
+
+  function stockTags(s) {
+    const tags = [];
+    if (s.marketType) tags.push(MARKET[s.marketType] || s.marketType);
+    const ct = CHANGE_TAG[s.changeTag];
+    if (ct) tags.push(ct.label);
+    if (s.isNew) tags.push('新');
+    if (s.isSt) tags.push('ST');
+    if (s.continueNum > 1) tags.push(`${s.continueNum}连板`);
+    return tags;
+  }
+
+  function parseStocks(list) {
+    if (!Array.isArray(list)) return [];
+    return list.map((s) => {
+      const item = {
+        code: s.code ?? '-',
+        name: s.name ?? '-',
+        latest: s.latest ?? '-',
+        changeRate: Number(s.change_rate ?? 0),
+        high: s.high ?? '-',
+        continueNum: Number(s.continue_num ?? 0),
+        firstTime: s.first_limit_up_time,
+        lastTime: s.last_limit_up_time,
+        firstTs: tsNum(s.first_limit_up_time),
+        lastTs: tsNum(s.last_limit_up_time),
+        marketType: s.market_type ?? '',
+        changeTag: s.change_tag ?? '',
+        reasonType: s.reason_type ?? '',
+        reasonInfo: s.reason_info ?? '',
+        isSt: Number(s.is_st ?? 0) === 1,
+        isNew: Number(s.is_new ?? 0) === 1,
+      };
+      item.tags = stockTags(item);
+      return item;
+    });
+  }
+
+  // ---------- render ----------
+  function setStatus(text) { els.status.textContent = text || ''; }
+
+  function showToast(msg, type = '') {
+    if (!els.toastWrap) return;
+    const el = document.createElement('div');
+    el.className = 'toast' + (type ? ' ' + type : '');
+    el.textContent = msg;
+    els.toastWrap.appendChild(el);
+    requestAnimationFrame(() => el.classList.add('show'));
+    setTimeout(() => {
+      el.classList.remove('show');
+      setTimeout(() => el.remove(), 220);
+    }, 2200);
+  }
+
+  function skelHtml(n = 6) {
+    const rows = Array.from({ length: n }, (_, i) =>
+      `<div class="skel-row${i === 0 ? ' lg' : (i % 3 === 0 ? ' sm' : '')}"></div>`
+    ).join('');
+    return `<div class="skel">${rows}</div>`;
+  }
+
+  function applyThsScale(v) {
+    const scale = Number(v) || 1;
+    state.thsScale = scale;
+    document.documentElement.style.setProperty('--ths-scale-user', String(scale));
+  }
+
+  function loadThsScale() {
+    try {
+      const v = localStorage.getItem('limit_up_ths_scale');
+      state.thsScale = v ? Number(v) : 1;
+      if (![1, 0.9, 0.8].includes(state.thsScale)) state.thsScale = 1;
+    } catch (_) { state.thsScale = 1; }
+    if (els.thsScale) els.thsScale.value = String(state.thsScale);
+    applyThsScale(state.thsScale);
+  }
+
+  function saveThsScale() {
+    const v = els.thsScale ? els.thsScale.value : '1';
+    try { localStorage.setItem('limit_up_ths_scale', v); } catch (_) {}
+    applyThsScale(v);
+    showToast(`个股页缩放已设为 ${Math.round(Number(v) * 100)}%`, 'ok');
+  }
+
+  function applyTheme() {
+    // B: dark default; light via html.light only
+    document.documentElement.classList.toggle('light', !state.darkMode);
+    document.documentElement.classList.remove('dark');
+  }
+
+  function loadDarkMode() {
+    try {
+      const v = localStorage.getItem('limit_up_dark');
+      // 未设置或 '1' → 暗色；仅显式 '0' 为浅色
+      state.darkMode = v !== '0';
+    } catch (_) { state.darkMode = true; }
+    applyTheme();
+    if (els.darkToggle) els.darkToggle.checked = !!state.darkMode;
+  }
+
+  function saveDarkMode() {
+    state.darkMode = !!(els.darkToggle && els.darkToggle.checked);
+    try { localStorage.setItem('limit_up_dark', state.darkMode ? '1' : '0'); } catch (_) {}
+    applyTheme();
+    showToast(state.darkMode ? '已切换暗色主题' : '已切换浅色主题', 'ok');
+  }
+
+  function loadEventCollapsed() {
+    try {
+      state.eventCollapsed = localStorage.getItem('limit_up_event_collapsed') === '1';
+    } catch (_) { state.eventCollapsed = false; }
+    // 小屏默认折叠
+    if (window.matchMedia('(max-width: 960px)').matches && localStorage.getItem('limit_up_event_collapsed') == null) {
+      state.eventCollapsed = true;
+    }
+    applyEventCollapsed();
+  }
+
+  function applyEventCollapsed() {
+    if (!els.eventCard) return;
+    els.eventCard.classList.toggle('event-card-collapsed', !!state.eventCollapsed);
+    if (els.eventToggle) els.eventToggle.textContent = state.eventCollapsed ? '▸' : '▾';
+  }
+
+  function toggleEventCard() {
+    state.eventCollapsed = !state.eventCollapsed;
+    try { localStorage.setItem('limit_up_event_collapsed', state.eventCollapsed ? '1' : '0'); } catch (_) {}
+    applyEventCollapsed();
+  }
+
+  function updateDayBadge() {
+    const badge = els.dayBadge;
+    const isToday = state.date && state.date === state.today;
+    const flag = isToday ? state.todayIsTradeDay : state.dateIsTradeDay;
+    badge.classList.remove('is-trade', 'not-trade', 'unknown');
+    if (flag === true) {
+      badge.classList.add('is-trade');
+      badge.textContent = isToday ? '今天是交易日' : '交易日';
+    } else if (flag === false) {
+      badge.classList.add('not-trade');
+      badge.textContent = isToday ? '今天非交易日' : '非交易日';
+    } else {
+      badge.classList.add('unknown');
+      badge.textContent = '交易日未知';
+    }
+  }
+
+  function fillDateSelect() {
+    const sel = els.dateSelect;
+    sel.innerHTML = '';
+    state.dates.forEach((d) => {
+      const opt = document.createElement('option');
+      opt.value = d;
+      opt.textContent = fmtDate(d);
+      sel.appendChild(opt);
+    });
+    if (state.date) sel.value = state.date;
+  }
+
+  function updateDateUi() {
+    state.dateIsTradeDay = isTradeDay(state.date);
+    if (els.dateSelect.options.length) els.dateSelect.value = state.date;
+    els.datePicker.value = toIso(state.date);
+    if (state.dates.length) {
+      els.datePicker.min = toIso(state.dates[0]);
+      els.datePicker.max = toIso(state.dates[state.dates.length - 1]);
+    }
+    els.btnPrev.disabled = state.index <= 0;
+    els.btnNext.disabled = state.index < 0 || state.index >= state.dates.length - 1;
+    updateDayBadge();
+  }
+
+  function msgHtml(type, text) {
+    return `<div class="msg ${type}">${esc(text)}</div>`;
+  }
+  function rawToggleHtml(id) {
+    return `<span class="raw-toggle" data-raw="${id}">查看原始 JSON</span><pre class="raw" id="${id}"></pre>`;
+  }
+
+  function blockVal(b, key) {
+    switch (key) {
+      case 'name': return b.name;
+      case 'limitUpNum': return b.limitUpNum;
+      case 'continuousPlateNum': return b.continuousPlateNum;
+      case 'high': return b.high;
+      case 'change': return b.change;
+      default: return b[key];
+    }
+  }
+
+  function stockVal(s, key) {
+    switch (key) {
+      case 'code': return s.code;
+      case 'name': return s.name;
+      case 'latest': return Number(s.latest) || 0;
+      case 'changeRate': return s.changeRate;
+      case 'high': return s.high;
+      case 'firstTime': return s.firstTs;
+      case 'lastTime': return s.lastTs;
+      case 'reasonType': return s.reasonType;
+      default: return s[key];
+    }
+  }
+
+  function sortedBlocks() {
+    const { key, dir } = state.blockSort;
+    return sortBy(state.blocks, key, dir, blockVal);
+  }
+
+  function filteredStocks(stocks) {
+    let list = stocks;
+    if (state.tagFilter && state.tagFilter !== 'all') {
+      list = list.filter((s) => s.tags.includes(state.tagFilter));
+    }
+    if (state.heightFilter && state.heightFilter !== 'all') {
+      const hf = state.heightFilter;
+      list = list.filter((s) => {
+        const h = String(s.high || '');
+        if (hf === '1') return /首板|1天|1板/.test(h) || h === '1' || h === '1天';
+        if (hf === '2') return /2天|2板|二板/.test(h) || h === '2' || h === '2天';
+        if (hf === '3+') {
+          const m = h.match(/(\d+)/);
+          return m ? Number(m[1]) >= 3 : /3天|3板|多板|连板/.test(h);
+        }
+        return true;
+      });
+    }
+    return list;
+  }
+
+  function sortedStocks(stocks) {
+    const { key, dir } = state.stockSort;
+    return sortBy(stocks, key, dir, stockVal);
+  }
+
+  function collectTags(stocks) {
+    const set = new Set();
+    stocks.forEach((s) => s.tags.forEach((t) => set.add(t)));
+    return [...set];
+  }
+
+  function renderTagFilters(stocks) {
+    const tags = collectTags(stocks);
+    const bar = els.tagFilters;
+    const heightOpts = [['all', '全部高度'], ['1', '首板'], ['2', '2板'], ['3+', '3板+']];
+    let html = '';
+    if (tags.length) {
+      const all = [['all', '全部'], ...tags.map((t) => [t, t])];
+      html += `<span class="label">标签</span>` + all.map(([v, label]) =>
+        `<button type="button" class="chip ${state.tagFilter === v ? 'active' : ''}" data-tag="${esc(v)}">${esc(label)}</button>`
+      ).join('');
+    }
+    html += `<span class="label">高度</span>` + heightOpts.map(([v, label]) =>
+      `<button type="button" class="chip ${state.heightFilter === v ? 'active' : ''}" data-height="${esc(v)}">${esc(label)}</button>`
+    ).join('');
+    bar.hidden = false;
+    bar.innerHTML = html;
+    bar.querySelectorAll('.chip[data-tag]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        state.tagFilter = btn.dataset.tag;
+        renderStocks();
+      });
+    });
+    bar.querySelectorAll('.chip[data-height]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        state.heightFilter = btn.dataset.height;
+        renderStocks();
+      });
+    });
+  }
+
+  function renderBlocks() {
+    const panel = els.blockPanel;
+    if (!state.blocks.length) {
+      panel.innerHTML = msgHtml('warn', '当日无板块数据');
+      els.blockMeta.textContent = '';
+      return;
+    }
+
+    const rows = sortedBlocks();
+    els.blockMeta.textContent = `${rows.length} 个板块`;
+
+    let html = `<table><thead><tr>
+      ${thSort('板块', 'name', state.blockSort)}
+      ${thSort('涨停', 'limitUpNum', state.blockSort)}
+      ${thSort('连板', 'continuousPlateNum', state.blockSort)}
+      ${thSort('高度', 'high', state.blockSort)}
+      ${thSort('涨幅', 'change', state.blockSort)}
+    </tr></thead><tbody>`;
+
+    rows.forEach((b) => {
+      const active = b.index === state.selected ? ' class="active"' : '';
+      html += `<tr data-idx="${b.index}"${active}>
+        <td><b>${esc(b.name)}</b></td>
+        <td class="num">${b.limitUpNum}</td>
+        <td class="num">${b.continuousPlateNum}</td>
+        <td>${esc(b.high)}</td>
+        <td class="num up">${esc(fmtPct(b.change))}</td>
+      </tr>`;
+    });
+    html += `</tbody></table>${rawToggleHtml('raw-block')}`;
+    panel.innerHTML = html;
+
+    const raw = $('raw-block');
+    if (raw && state.rawBlock) raw.textContent = JSON.stringify(state.rawBlock, null, 2);
+
+    panel.querySelectorAll('tbody tr').forEach((tr) => {
+      tr.addEventListener('click', () => selectBlock(Number(tr.dataset.idx)));
+    });
+    panel.querySelectorAll('th.sortable').forEach((th) => {
+      th.addEventListener('click', () => {
+        const key = th.dataset.sort;
+        if (state.blockSort.key === key) {
+          state.blockSort.dir = state.blockSort.dir === 'asc' ? 'desc' : 'asc';
+        } else {
+          state.blockSort = { key, dir: key === 'name' || key === 'high' ? 'asc' : 'desc' };
+        }
+        renderBlocks();
+      });
+    });
+    bindRawToggle(panel);
+  }
+
+  function poolMeta(kind) {
+    return POOL_KINDS[kind] || POOL_KINDS.limitUp;
+  }
+
+  function poolTotalHint(kind, d, chunkLen) {
+    if (kind === 'limitUp') return d.page?.total ?? d.limit_up_count?.today?.num ?? chunkLen;
+    if (kind === 'openLimit') return d.page?.total ?? d.limit_up_count?.today?.open_num ?? chunkLen;
+    if (kind === 'limitDown') return d.page?.total ?? d.limit_down_count?.today?.num ?? chunkLen;
+    return d.page?.total ?? chunkLen;
+  }
+
+  async function loadPoolList(kind, page, append = false) {
+    const meta = poolMeta(kind);
+    const loadingKey = meta.loadingKey;
+    const dataKey = meta.dataKey;
+    const label = meta.label;
+    const apiFn = meta.api;
+    const panel = els.blockPanel;
+    if (!state.date || state[loadingKey]) return;
+    const p = page || 1;
+    state[loadingKey] = true;
+    if (!append) {
+      panel.innerHTML = msgHtml('loading', `加载${label}数据...`);
+      els.blockMeta.textContent = '';
+      state[dataKey] = null;
+
+      // 历史日 / 当日收盘后：仅当缓存写入时间 ≥ 当日 15:00 才直接用
+      if (isFrozenDate(state.date)) {
+        const cached = loadPoolCache(kind, state.date, { requireFrozen: true });
+        if (cached && Array.isArray(cached.list) && cached.list.length) {
+          state[dataKey] = {
+            list: cached.list,
+            total: cached.total ?? cached.list.length,
+            page: cached.page || 1,
+            raw: cached.raw || null,
+          };
+          renderPoolSideList(kind, { openFirst: true });
+          setStatus(state.date === state.today
+            ? `缓存 ${fmtDate(state.date)} (15:00后)`
+            : `缓存 ${fmtDate(state.date)}`);
+          state[loadingKey] = false;
+          return;
+        }
+      }
+    } else {
+      const tip = panel.querySelector('.scroll-more');
+      if (tip) tip.textContent = '加载中...';
+    }
+    try {
+      const url = apiFn(state.date, p, 30);
+      const json = await getJson(url, { retryProxy: true });
+      const d = json?.data || {};
+      const chunk = Array.isArray(d.info) ? d.info : [];
+      const total = poolTotalHint(kind, d, chunk.length);
+      if (append && state[dataKey]) {
+        const seen = new Set(state[dataKey].list.map((x) => String(x.code || '')));
+        chunk.forEach((item) => {
+          const c = String(item.code || '');
+          if (c && !seen.has(c)) {
+            seen.add(c);
+            state[dataKey].list.push(item);
+          }
+        });
+        state[dataKey].total = total;
+        state[dataKey].page = p;
+      } else {
+        state[dataKey] = { list: chunk, total, page: p, raw: json };
+      }
+      // 收盘后/历史日写入（savedAt 用于校验是否 15:00 后）
+      if (isFrozenDate(state.date) && state[dataKey]) {
+        savePoolCache(kind, state.date, {
+          list: state[dataKey].list,
+          total: state[dataKey].total,
+          page: state[dataKey].page,
+          raw: state[dataKey].raw || json,
+        });
+      }
+      renderPoolSideList(kind, { openFirst: !append });
+    } catch (e) {
+      if (!append) {
+        // 网络失败：任意缓存兜底
+        const cached = loadPoolCache(kind, state.date, { requireFrozen: false, allowAny: true });
+        if (cached && Array.isArray(cached.list) && cached.list.length) {
+          state[dataKey] = {
+            list: cached.list,
+            total: cached.total ?? cached.list.length,
+            page: cached.page || 1,
+            raw: cached.raw || null,
+          };
+          renderPoolSideList(kind, { openFirst: true });
+          setStatus(`缓存 ${fmtDate(state.date)} (网络不可用)`);
+        } else {
+          panel.innerHTML = msgHtml('error', `${label}请求失败: ${e.message}`);
+        }
+      } else {
+        const tip = panel.querySelector('.scroll-more');
+        if (tip) tip.textContent = '加载失败，继续滚动重试';
+      }
+    } finally {
+      state[loadingKey] = false;
+    }
+  }
+
+  function loadOpenLimitPool(page, append = false) {
+    return loadPoolList('openLimit', page, append);
+  }
+
+  function loadLimitUpPool(page, append = false) {
+    return loadPoolList('limitUp', page, append);
+  }
+
+  function loadLimitDownPool(page, append = false) {
+    return loadPoolList('limitDown', page, append);
+  }
+
+  function fmtMoney(v) {
+    const n = Number(v);
+    if (!Number.isFinite(n) || n <= 0) return '-';
+    if (n >= 1e8) return (n / 1e8).toFixed(n >= 1e9 ? 1 : 2) + '亿';
+    if (n >= 1e4) return (n / 1e4).toFixed(n >= 1e6 ? 0 : 1) + '万';
+    return String(Math.round(n));
+  }
+
+  function getVal(obj, keys) {
+    if (!obj) return null;
+    for (const k of keys) {
+      if (obj[k] != null && obj[k] !== '') return obj[k];
+    }
+    return null;
+  }
+
+  function getPoolState(kind) {
+    return state[poolMeta(kind).dataKey];
+  }
+
+  function poolLabel(kind) {
+    return poolMeta(kind).label;
+  }
+
+  function fmtSucRate(v) {
+    if (v == null || v === '') return '-';
+    const n = Number(v);
+    if (!Number.isFinite(n)) return '-';
+    // API 可能是 0~1 或已是百分比
+    return fmtPct(n <= 1 ? n * 100 : n);
+  }
+
+  function fmtPreview(arr) {
+    if (!Array.isArray(arr) || !arr.length) return '-';
+    return arr.map((x) => {
+      const n = Number(x);
+      return Number.isFinite(n) ? n.toFixed(2) + '%' : String(x);
+    }).join(' / ');
+  }
+
+  function poolItemTagsHtml(s) {
+    const tags = [];
+    const changeTag = getVal(s, ['change_tag']) || '';
+    const ct = CHANGE_TAG[changeTag];
+    const limitType = getVal(s, ['limit_up_type']) || '';
+    const mkt = getVal(s, ['market_type']) || '';
+    const mktLabel = MARKET[mkt] || mkt;
+    if (ct) tags.push(`<span class="tag ${ct.cls}">${esc(ct.label)}</span>`);
+    if (limitType) tags.push(`<span class="tag">${esc(limitType)}</span>`);
+    if (Number(getVal(s, ['is_again_limit']) || 0) === 1) tags.push('<span class="tag back">回封</span>');
+    if (Number(getVal(s, ['is_new']) || 0) === 1) tags.push('<span class="tag">新</span>');
+    if (mktLabel) tags.push(`<span class="tag">${esc(mktLabel)}</span>`);
+    return tags.join('') || '-';
+  }
+
+  function renderPoolSideList(kind, opts = {}) {
+    const { openFirst = true } = opts;
+    const panel = els.blockPanel;
+    const raw = getPoolState(kind);
+    const list = raw?.list;
+    const label = poolLabel(kind);
+    if (!Array.isArray(list) || !list.length) {
+      panel.innerHTML = msgHtml('warn', `当日无${label}数据`);
+      els.blockMeta.textContent = '0 只';
+      closeStockDetail();
+      els.tagFilters.hidden = true;
+      els.stockPanel.innerHTML = msgHtml('loading', `无${label}个股`);
+      els.stockMeta.textContent = '';
+      state.stockNavList = [];
+      return;
+    }
+    const total = raw.total ?? list.length;
+    const page = raw.page || 1;
+    const hasMore = list.length < total;
+    els.blockMeta.textContent = `${list.length}/${total} 只`;
+    state.stockNavList = list.map((s) => ({
+      code: String(getVal(s, ['code']) || ''),
+      name: String(getVal(s, ['name']) || ''),
+    })).filter((s) => s.code);
+
+    if (state.poolSelected < 0 || state.poolSelected >= list.length) {
+      state.poolSelected = 0;
+    }
+
+    const scrollTop = panel.scrollTop;
+    let html = kind === 'limitUp'
+      ? `<table><thead><tr>
+          <th>代码</th><th>名称</th><th>最新</th><th>涨幅</th><th>连板</th>
+          <th>封单</th><th>换手</th><th>首次封板</th><th>类型</th>
+        </tr></thead><tbody>`
+      : kind === 'limitDown'
+        ? `<table><thead><tr>
+            <th>代码</th><th>名称</th><th>最新</th><th>跌幅</th><th>换手</th>
+            <th>流通市值</th><th>市场</th><th>标签</th>
+          </tr></thead><tbody>`
+        : `<table><thead><tr>
+            <th>代码</th><th>名称</th><th>最新</th><th>炸板涨幅</th><th>炸板次数</th>
+            <th>首次涨停</th><th>换手</th><th>市场</th>
+          </tr></thead><tbody>`;
+
+    list.forEach((s, i) => {
+      const code = String(getVal(s, ['code']) || '');
+      const name = String(getVal(s, ['name']) || '');
+      const price = getVal(s, ['latest']) || '-';
+      const rate = getVal(s, ['change_rate']);
+      const rateNum = rate != null ? Number(rate) : NaN;
+      const rateCls = Number.isFinite(rateNum) ? (rateNum >= 0 ? 'up' : 'down') : '';
+      const active = i === state.poolSelected ? ' class="active"' : '';
+      if (kind === 'limitUp') {
+        const highDays = getVal(s, ['high_days']) || '-';
+        const orderAmt = getVal(s, ['order_amount']);
+        const turn = getVal(s, ['turnover_rate']);
+        const firstTs = getVal(s, ['first_limit_up_time']);
+        const limitType = getVal(s, ['limit_up_type']) || '';
+        const changeTag = getVal(s, ['change_tag']) || '';
+        const ct = CHANGE_TAG[changeTag];
+        const tags = [];
+        if (ct) tags.push(`<span class="tag ${ct.cls}">${esc(ct.label)}</span>`);
+        if (limitType) tags.push(`<span class="tag">${esc(limitType)}</span>`);
+        html += `<tr data-pool-idx="${i}"${active}>
+          <td class="code">${esc(code)}</td>
+          <td><b>${esc(name)}</b></td>
+          <td class="num">${esc(String(price))}</td>
+          <td class="num ${rateCls}">${rate != null ? fmtPct(rate) : '-'}</td>
+          <td>${esc(String(highDays))}</td>
+          <td class="num">${esc(fmtMoney(orderAmt))}</td>
+          <td class="num">${turn != null ? fmtPct(turn) : '-'}</td>
+          <td class="num">${esc(fmtTime(firstTs))}</td>
+          <td>${tags.join('') || '-'}</td>
+        </tr>`;
+      } else if (kind === 'limitDown') {
+        const turn = getVal(s, ['turnover_rate']);
+        const currency = getVal(s, ['currency_value']);
+        const mkt = getVal(s, ['market_type']) || '';
+        const mktLabel = MARKET[mkt] || mkt || '-';
+        const changeTag = getVal(s, ['change_tag']) || 'LIMIT_DOWN';
+        const ct = CHANGE_TAG[changeTag] || CHANGE_TAG.LIMIT_DOWN;
+        html += `<tr data-pool-idx="${i}"${active}>
+          <td class="code">${esc(code)}</td>
+          <td><b>${esc(name)}</b></td>
+          <td class="num">${esc(String(price))}</td>
+          <td class="num ${rateCls}">${rate != null ? fmtPct(rate) : '-'}</td>
+          <td class="num">${turn != null ? fmtPct(turn) : '-'}</td>
+          <td class="num">${esc(fmtMoney(currency))}</td>
+          <td>${esc(mktLabel)}</td>
+          <td><span class="tag ${ct.cls}">${esc(ct.label)}</span></td>
+        </tr>`;
+      } else {
+        const openNum = getVal(s, ['open_num']) ?? '-';
+        const firstTs = getVal(s, ['first_limit_up_time']);
+        const turn = getVal(s, ['turnover_rate']);
+        const mkt = getVal(s, ['market_type']) || '';
+        const mktLabel = MARKET[mkt] || mkt || '-';
+        html += `<tr data-pool-idx="${i}"${active}>
+          <td class="code">${esc(code)}</td>
+          <td><b>${esc(name)}</b></td>
+          <td class="num">${esc(String(price))}</td>
+          <td class="num ${rateCls}">${rate != null ? fmtPct(rate) : '-'}</td>
+          <td class="num">${esc(String(openNum))}</td>
+          <td class="num">${esc(fmtTime(firstTs))}</td>
+          <td class="num">${turn != null ? fmtPct(turn) : '-'}</td>
+          <td>${esc(mktLabel)}</td>
+        </tr>`;
+      }
+    });
+    html += '</tbody></table>';
+    if (hasMore) {
+      html += `<div class="scroll-more">上拉加载更多 · 第 ${page} 页</div>`;
+    } else {
+      html += `<div class="scroll-more">已加载全部 ${total} 只</div>`;
+    }
+    panel.innerHTML = html;
+    panel.scrollTop = scrollTop;
+    panel.querySelectorAll('tbody tr').forEach((tr) => {
+      tr.addEventListener('click', () => {
+        const idx = Number(tr.dataset.poolIdx);
+        if (!Number.isFinite(idx)) return;
+        if (idx === state.poolSelected) {
+          renderPoolStockDetail(kind);
+          return;
+        }
+        state.poolSelected = idx;
+        panel.querySelectorAll('tbody tr').forEach((r) => r.classList.toggle('active', Number(r.dataset.poolIdx) === idx));
+        renderPoolStockDetail(kind);
+      });
+    });
+    bindPoolScroll(kind);
+    renderPoolStockDetail(kind, { openFirst });
+  }
+
+  function renderOpenLimitPool(opts = {}) {
+    renderPoolSideList('openLimit', opts);
+  }
+
+  function renderLimitUpPool(opts = {}) {
+    renderPoolSideList('limitUp', opts);
+  }
+
+  function renderLimitDownPool(opts = {}) {
+    renderPoolSideList('limitDown', opts);
+  }
+
+  function buildPoolInfoTableHtml(s, code, name) {
+    const price = getVal(s, ['latest']) || '-';
+    const rate = getVal(s, ['change_rate']);
+    const rateNum = rate != null ? Number(rate) : NaN;
+    const rateCls = Number.isFinite(rateNum) ? (rateNum >= 0 ? 'up' : 'down') : '';
+    const mkt = getVal(s, ['market_type']) || '';
+    const mktLabel = MARKET[mkt] || mkt || '-';
+    const changeTag = getVal(s, ['change_tag']) || '';
+    const ct = CHANGE_TAG[changeTag];
+    const limitType = getVal(s, ['limit_up_type']) || '';
+    const highDays = getVal(s, ['high_days']);
+    const highDaysVal = getVal(s, ['high_days_value']);
+    const openNum = getVal(s, ['open_num']);
+    const orderAmt = getVal(s, ['order_amount']);
+    const orderVol = getVal(s, ['order_volume']);
+    const turn = getVal(s, ['turnover_rate']);
+    const firstTs = getVal(s, ['first_limit_up_time']);
+    const lastTs = getVal(s, ['last_limit_up_time']);
+    const sucRate = getVal(s, ['limit_up_suc_rate']);
+    const currency = getVal(s, ['currency_value']);
+    const reason = getVal(s, ['reason_type']);
+    const marketId = getVal(s, ['market_id']);
+    const isAgain = Number(getVal(s, ['is_again_limit']) || 0) === 1;
+    const isNew = Number(getVal(s, ['is_new']) || 0) === 1;
+    const preview = getVal(s, ['time_preview']);
+
+    const rows = [
+      ['代码', `<a class="code stock-link stock-code-link" href="${esc(stockPageUrl(code))}" data-code="${esc(code)}" data-name="${esc(name)}">${esc(code)}</a>`],
+      ['名称', `<a class="stock-link stock-name-link" href="${esc(stockPageUrl(code))}" data-code="${esc(code)}" data-name="${esc(name)}"><b>${esc(name)}</b></a>`],
+      ['最新价', esc(String(price))],
+      ['涨跌幅', `<span class="${rateCls}">${rate != null ? fmtPct(rate) : '-'}</span>`],
+      ['连板高度', esc(highDays != null && highDays !== '' ? String(highDays) : '-')],
+      ['高度值', highDaysVal != null ? esc(String(highDaysVal)) : '-'],
+      ['封板类型', esc(limitType || '-')],
+      ['状态标签', ct ? `<span class="tag ${ct.cls}">${esc(ct.label)}</span>` : esc(changeTag || '-')],
+      ['首次封板', esc(fmtTime(firstTs))],
+      ['最后封板', esc(fmtTime(lastTs))],
+      ['炸板次数', openNum != null && openNum !== '' ? esc(String(openNum)) : '-'],
+      ['封单金额', esc(fmtMoney(orderAmt))],
+      ['封单量', esc(fmtMoney(orderVol))],
+      ['换手率', turn != null ? fmtPct(turn) : '-'],
+      ['流通市值', esc(fmtMoney(currency))],
+      ['封板成功率', fmtSucRate(sucRate)],
+      ['是否回封', isAgain ? '是' : '否'],
+      ['是否新股', isNew ? '是' : '否'],
+      ['市场', esc(mktLabel)],
+      ['市场ID', marketId != null ? esc(String(marketId)) : '-'],
+      ['原因/题材', esc(reason || '-')],
+      ['分时预览', esc(fmtPreview(preview))],
+      ['标签', poolItemTagsHtml(s)],
+    ];
+
+    let html = `<table><tbody>`;
+    rows.forEach(([k, v]) => {
+      html += `<tr><th style="width:96px;text-align:left">${esc(k)}</th><td>${v}</td></tr>`;
+    });
+    html += `</tbody></table>`;
+    return html;
+  }
+
+  function switchPoolDetailTab(tab) {
+    if (tab !== 'kline' && tab !== 'info') return;
+    state.poolDetailTab = tab;
+    const root = els.stockPanel.querySelector('.pool-detail');
+    if (!root) return;
+    root.querySelectorAll('.pool-detail-tabs .tab-btn').forEach((b) => {
+      b.classList.toggle('active', b.dataset.tab === tab);
+    });
+    root.querySelectorAll('.pool-detail-pane').forEach((p) => {
+      p.classList.toggle('active', p.dataset.pane === tab);
+    });
+    // 切到 K 线时确保 iframe 已加载
+    if (tab === 'kline') {
+      const iframe = root.querySelector('#pool-kline-frame');
+      const code = iframe?.dataset.code;
+      if (iframe && code) {
+        const url = stockPageUrl(code);
+        if (!iframe.src || iframe.src === 'about:blank' || !String(iframe.src).includes(code)) {
+          iframe.src = url;
+        }
+      }
+    }
+  }
+
+  function renderPoolStockDetail(kind) {
+    const raw = getPoolState(kind);
+    const list = raw?.list || [];
+    const label = poolLabel(kind);
+    const panel = els.stockPanel;
+    els.tagFilters.hidden = true;
+    els.tagFilters.innerHTML = '';
+    closeStockDetail();
+
+    if (!list.length) {
+      state.stockNavList = [];
+      panel.innerHTML = msgHtml('loading', `无${label}个股`);
+      els.stockMeta.textContent = '';
+      return;
+    }
+
+    const idx = Math.max(0, Math.min(state.poolSelected, list.length - 1));
+    state.poolSelected = idx;
+    const s = list[idx];
+    const code = String(getVal(s, ['code']) || '');
+    const name = String(getVal(s, ['name']) || '');
+    state.stockNavList = list.map((x) => ({
+      code: String(getVal(x, ['code']) || ''),
+      name: String(getVal(x, ['name']) || ''),
+    })).filter((x) => x.code);
+    els.stockMeta.textContent = `${label} · ${name || code} · ${idx + 1}/${list.length}`;
+
+    const tab = state.poolDetailTab === 'info' ? 'info' : 'kline';
+    const pageUrl = stockPageUrl(code);
+    const infoHtml = buildPoolInfoTableHtml(s, code, name);
+
+    panel.innerHTML = `<div class="pool-detail">
+      <div class="pool-detail-tabs">
+        <div class="tab-switch" id="pool-detail-tabs">
+          <button type="button" class="tab-btn ${tab === 'kline' ? 'active' : ''}" data-tab="kline">K线</button>
+          <button type="button" class="tab-btn ${tab === 'info' ? 'active' : ''}" data-tab="info">详情</button>
+        </div>
+        <a class="stock-detail-ext" href="${esc(pageUrl)}" target="_blank" rel="noopener" title="新窗口打开" style="margin-left:auto">↗</a>
+      </div>
+      <div class="pool-detail-body">
+        <div class="pool-detail-pane pane-kline ${tab === 'kline' ? 'active' : ''}" data-pane="kline">
+          <iframe id="pool-kline-frame" title="K线 ${esc(code)}" data-code="${esc(code)}"
+            sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-popups-to-escape-sandbox"
+            ${tab === 'kline' ? `src="${esc(pageUrl)}"` : 'src="about:blank"'}></iframe>
+        </div>
+        <div class="pool-detail-pane pane-info ${tab === 'info' ? 'active' : ''}" data-pane="info">
+          ${infoHtml}
+        </div>
+      </div>
+    </div>`;
+
+    const tabs = panel.querySelector('#pool-detail-tabs');
+    if (tabs) {
+      tabs.addEventListener('click', (e) => {
+        const btn = e.target.closest('.tab-btn');
+        if (!btn || btn.classList.contains('active')) return;
+        switchPoolDetailTab(btn.dataset.tab);
+      });
+    }
+    bindStockLinks(panel.querySelector('.pane-info') || panel);
+  }
+
+  function bindPoolScroll(kind) {
+    const panel = els.blockPanel;
+    panel.onscroll = null;
+    if (state.blockView !== kind) return;
+    const meta = poolMeta(kind);
+    const loadingKey = meta.loadingKey;
+    const dataKey = meta.dataKey;
+    panel.onscroll = () => {
+      if (state.blockView !== kind || state[loadingKey]) return;
+      const d = state[dataKey];
+      if (!d || !d.list || d.list.length >= (d.total || 0)) return;
+      if (panel.scrollTop + panel.clientHeight >= panel.scrollHeight - 80) {
+        loadPoolList(kind, (d.page || 1) + 1, true);
+      }
+    };
+  }
+
+  function renderStocks() {
+    const panel = els.stockPanel;
+    if (state.selected < 0 || !state.blocks[state.selected]) {
+      state.stockNavList = [];
+      els.tagFilters.hidden = true;
+      panel.innerHTML = msgHtml('loading', '选择左侧板块查看个股');
+      els.stockMeta.textContent = '';
+      return;
+    }
+
+    const block = state.blocks[state.selected];
+    const all = block.stocks;
+    renderTagFilters(all);
+    const filtered = filteredStocks(all);
+    const rows = sortedStocks(filtered);
+    state.stockNavList = rows.map((s) => ({ code: String(s.code || ''), name: s.name || '' }));
+    els.stockMeta.textContent = `${block.name} · ${rows.length}/${all.length} 只`;
+
+    if (!all.length) {
+      state.stockNavList = [];
+      panel.innerHTML = msgHtml('warn', '该板块无个股明细');
+      return;
+    }
+    if (!rows.length) {
+      state.stockNavList = [];
+      panel.innerHTML = msgHtml('warn', '当前标签下无匹配个股');
+      return;
+    }
+
+    let html = `<table><thead><tr>
+      ${thSort('代码', 'code', state.stockSort)}
+      ${thSort('名称', 'name', state.stockSort)}
+      ${thSort('最新', 'latest', state.stockSort)}
+      ${thSort('涨幅', 'changeRate', state.stockSort)}
+      ${thSort('高度', 'high', state.stockSort)}
+      ${thSort('首次封板', 'firstTime', state.stockSort)}
+      ${thSort('最后封板', 'lastTime', state.stockSort)}
+      <th>标签</th>
+      ${thSort('原因', 'reasonType', state.stockSort)}
+    </tr></thead><tbody>`;
+
+    const activeCode = currentDetailCode();
+    rows.forEach((s) => {
+      const rateCls = s.changeRate >= 0 ? 'up' : 'down';
+      const tagsHtml = s.tags.map((t) => {
+        const ct = Object.values(CHANGE_TAG).find((x) => x.label === t);
+        const cls = ct ? `tag ${ct.cls}` : 'tag';
+        return `<span class="${cls}">${esc(t)}</span>`;
+      }).join('');
+      const title = esc((s.reasonInfo || s.reasonType || '').replace(/\n/g, ' '));
+      const code = String(s.code || '');
+      const isActive = activeCode && code === activeCode && els.stockDetail.classList.contains('open');
+      html += `<tr data-code="${esc(code)}"${isActive ? ' class="active"' : ''}>
+        <td class="code"><a class="code stock-link stock-code-link" href="${esc(stockPageUrl(code))}" data-code="${esc(code)}" data-name="${esc(s.name)}" title="点代码：${isTvOn() ? '新窗口 TradingView' : '面板内资料'}">${esc(code)}</a></td>
+        <td><a class="stock-link stock-name-link" href="${esc(stockPageUrl(code))}" data-code="${esc(code)}" data-name="${esc(s.name)}" title="点名称：面板内同花顺资料">${esc(s.name)}</a></td>
+        <td class="num">${esc(s.latest)}</td>
+        <td class="num ${rateCls}">${esc(fmtPct(s.changeRate))}</td>
+        <td>${esc(s.high)}</td>
+        <td class="num">${esc(fmtTime(s.firstTime))}</td>
+        <td class="num">${esc(fmtTime(s.lastTime))}</td>
+        <td>${tagsHtml}</td>
+        <td class="reason" title="${title}">${esc(s.reasonType || '')}</td>
+      </tr>`;
+    });
+    html += '</tbody></table>';
+    panel.innerHTML = html;
+
+    bindStockLinks(panel);
+
+    panel.querySelectorAll('th.sortable').forEach((th) => {
+      th.addEventListener('click', () => {
+        const key = th.dataset.sort;
+        if (state.stockSort.key === key) {
+          state.stockSort.dir = state.stockSort.dir === 'asc' ? 'desc' : 'asc';
+        } else {
+          const ascDefault = ['code', 'name', 'high', 'firstTime', 'lastTime', 'reasonType'].includes(key);
+          state.stockSort = { key, dir: ascDefault ? 'asc' : 'desc' };
+        }
+        renderStocks();
+      });
+    });
+  }
+
+  function tvSymbol(code) {
+    const c = String(code || '').replace(/\D/g, '');
+    if (!c) return code;
+    if (/^[695]/.test(c)) return `SSE:${c}`;
+    if (/^[0123]/.test(c)) return `SZSE:${c}`;
+    if (/^[48]/.test(c)) return `BSE:${c}`;
+    return c;
+  }
+
+  /** 同花顺市场前缀：沪 17_ / 深 33_ / 其它 hs_ */
+  function thsMarketPrefix(code) {
+    const c = String(code || '').replace(/\D/g, '');
+    if (!c) return '';
+    // 沪市主板/科创/基金等
+    if (/^6/.test(c) || /^5/.test(c) || /^9/.test(c)) return '17_';
+    // 深市主板/中小/创业
+    if (/^[023]/.test(c)) return '33_';
+    // 北交所等
+    return 'hs_';
+  }
+
+  function thsMobilePathCode(code) {
+    const c = String(code || '').replace(/\D/g, '') || String(code || '');
+    const p = thsMarketPrefix(c);
+    return p ? `${p}${c}` : c;
+  }
+
+  function stockPageUrlDesktop(code) {
+    const c = String(code || '').replace(/\D/g, '') || code;
+    return `https://stockpage.10jqka.com.cn/${c}/`;
+  }
+
+  function stockPageUrlMobile(code) {
+    const pathCode = thsMobilePathCode(code);
+    return `https://m.10jqka.com.cn/stockpage/${pathCode}/`;
+  }
+
+  function isThsMobile() {
+    if (els.thsPageVer) return els.thsPageVer.value !== 'desktop';
+    return state.thsPageVer !== 'desktop';
+  }
+
+  function stockPageUrl(code) {
+    return isThsMobile() ? stockPageUrlMobile(code) : stockPageUrlDesktop(code);
+  }
+
+  function loadThsPageVer() {
+    try {
+      const v = localStorage.getItem('limit_up_ths_page_ver');
+      state.thsPageVer = (v === 'desktop') ? 'desktop' : 'mobile';
+    } catch (_) { state.thsPageVer = 'mobile'; }
+    if (els.thsPageVer) els.thsPageVer.value = state.thsPageVer;
+  }
+
+  function saveThsPageVer() {
+    const v = els.thsPageVer ? els.thsPageVer.value : 'mobile';
+    state.thsPageVer = v === 'desktop' ? 'desktop' : 'mobile';
+    try { localStorage.setItem('limit_up_ths_page_ver', state.thsPageVer); } catch (_) {}
+    // 已打开的详情按新版本重载
+    const code = currentDetailCode();
+    if (code && els.stockDetail.classList.contains('open')) {
+      // 清缓存后重开
+      const key = frameCacheKey(code, 'ths');
+      const entry = frameCache.map.get(key);
+      if (entry?.iframe) {
+        entry.iframe.remove();
+        frameCache.map.delete(key);
+        frameCache.order = frameCache.order.filter((k) => k !== key);
+      }
+      openStockDetail(code, state.stockNavList[state.stockNavIndex]?.name || '');
+    }
+    showToast(state.thsPageVer === 'mobile' ? '已切换手机版个股页' : '已切换桌面版个股页', 'ok');
+  }
+
+  function stockTvUrl(code) {
+    return `https://cn.tradingview.com/chart/?symbol=${encodeURIComponent(tvSymbol(code))}`;
+  }
+
+  function isTvOn() {
+    // 以 checkbox 实时状态为准，避免 state 不同步
+    if (els.tvToggle) return !!els.tvToggle.checked;
+    return !!state.useTradingView;
+  }
+
+  function stockCodeHref(code) {
+    return isTvOn() ? stockTvUrl(code) : stockPageUrl(code);
+  }
+
+  function bindStockLinks(panel) {
+    panel.querySelectorAll('a.stock-code-link').forEach((a) => {
+      const code = a.dataset.code;
+      a.href = stockCodeHref(code);
+      a.target = isTvOn() ? '_blank' : '_self';
+      a.rel = 'noopener';
+      a.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        // TV 禁止 iframe，开关开只能新窗口；关则面板内资料
+        if (isTvOn()) {
+          window.open(stockTvUrl(code), '_blank', 'noopener');
+        } else {
+          openStockDetail(code, a.dataset.name, { mode: 'ths' });
+        }
+      });
+    });
+    panel.querySelectorAll('a.stock-name-link').forEach((a) => {
+      a.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        // 名字始终面板内打开资料
+        openStockDetail(a.dataset.code, a.dataset.name, { mode: 'ths' });
+      });
+    });
+  }
+
+  function refreshCodeLinkHrefs() {
+    document.querySelectorAll('a.stock-code-link').forEach((a) => {
+      if (a.dataset.code) a.href = stockCodeHref(a.dataset.code);
+    });
+  }
+
+  function loadTvSetting() {
+    try {
+      state.useTradingView = localStorage.getItem('limit_up_use_tv') === '1';
+    } catch (_) {
+      state.useTradingView = false;
+    }
+    if (els.tvToggle) els.tvToggle.checked = !!state.useTradingView;
+  }
+
+  function saveTvSetting() {
+    state.useTradingView = isTvOn();
+    try { localStorage.setItem('limit_up_use_tv', state.useTradingView ? '1' : '0'); } catch (_) {}
+    refreshCodeLinkHrefs();
+    if (els.stockDetail.classList.contains('open')) {
+      syncDetailExtLink(currentDetailCode(), isTvOn() ? 'tv' : 'ths');
+    }
+  }
+
+  // 个股详情 iframe 缓存：只缓存实际打开过的，最多 5 个，LRU 淘汰
+  // key = `${mode}:${code}`  mode=ths|tv
+  const FRAME_CACHE_MAX = 5;
+  const frameCache = {
+    order: [],
+    map: new Map(),
+  };
+  let detailMode = 'ths'; // 当前详情模式
+
+  function frameCacheKey(code, mode) {
+    const ver = isThsMobile() ? 'm' : 'd';
+    return `${mode || 'ths'}:${ver}:${code}`;
+  }
+
+  function touchCache(key) {
+    frameCache.order = frameCache.order.filter((k) => k !== key);
+    frameCache.order.push(key);
+  }
+
+  function evictFrameCache() {
+    while (frameCache.order.length > FRAME_CACHE_MAX) {
+      const old = frameCache.order.shift();
+      const entry = frameCache.map.get(old);
+      if (entry?.iframe) entry.iframe.remove();
+      frameCache.map.delete(old);
+    }
+  }
+
+  function hideAllFrames() {
+    frameCache.map.forEach((entry) => {
+      entry.iframe.classList.remove('active');
+    });
+  }
+
+  function getOrCreateFrame(code, mode) {
+    const key = frameCacheKey(code, mode);
+    if (frameCache.map.has(key)) {
+      touchCache(key);
+      return frameCache.map.get(key);
+    }
+    const iframe = document.createElement('iframe');
+    iframe.title = mode === 'tv' ? `TV ${code}` : `资料 ${code}`;
+    // TV 需要更宽松 sandbox 才可能加载
+    iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups allow-forms allow-popups-to-escape-sandbox');
+    iframe.dataset.code = code;
+    iframe.dataset.mode = mode;
+    const entry = { iframe, loaded: false, key, mode, code };
+    iframe.addEventListener('load', () => {
+      if (!iframe.src || iframe.src === 'about:blank') return;
+      entry.loaded = true;
+      if (iframe.classList.contains('active')) {
+        clearDetailLoadTimer();
+        setDetailLoadingUI(false);
+      }
+    });
+    els.stockDetailBd.appendChild(iframe);
+    frameCache.map.set(key, entry);
+    touchCache(key);
+    evictFrameCache();
+    return entry;
+  }
+
+  function showCachedFrame(code, mode) {
+    hideAllFrames();
+    const entry = getOrCreateFrame(code, mode);
+    entry.iframe.classList.add('active');
+    return entry;
+  }
+
+  function currentDetailCode() {
+    const s = state.stockNavList[state.stockNavIndex];
+    return s?.code || '';
+  }
+
+  function syncDetailExtLink(code, mode) {
+    if (!code) {
+      els.stockDetailExt.href = '#';
+      els.stockDetailExt.title = '新窗口打开';
+      return;
+    }
+    const m = mode || detailMode;
+    if (m === 'tv') {
+      els.stockDetailExt.href = stockTvUrl(code);
+      els.stockDetailExt.title = '新窗口打开 TradingView';
+    } else {
+      els.stockDetailExt.href = stockPageUrl(code);
+      els.stockDetailExt.title = '新窗口打开同花顺资料';
+    }
+  }
+
+  function clearDetailLoadTimer() {
+    if (state.detailLoadTimer) {
+      clearTimeout(state.detailLoadTimer);
+      state.detailLoadTimer = null;
+    }
+  }
+
+  function setDetailLoadingUI(loading, timedOut = false) {
+    const loadEl = els.stockDetailLoading;
+    if (!loadEl) {
+      els.stockDetail.classList.toggle('loading', loading);
+      return;
+    }
+    const text = loadEl.querySelector('.load-text');
+    const actions = loadEl.querySelector('.load-actions');
+    if (loading) {
+      els.stockDetail.classList.add('loading');
+      if (text) text.textContent = timedOut ? '加载较慢或失败，可重试或新窗口打开' : '加载同花顺资料...';
+      if (actions) actions.hidden = !timedOut;
+      if (els.btnDetailNewwin) {
+        const code = currentDetailCode();
+        els.btnDetailNewwin.href = code ? stockPageUrl(code) : '#';
+      }
+    } else {
+      els.stockDetail.classList.remove('loading');
+      if (actions) actions.hidden = true;
+    }
+  }
+
+  function highlightStockRow(code) {
+    document.querySelectorAll('#stock-panel tbody tr[data-code]').forEach((tr) => {
+      tr.classList.toggle('active', !!code && tr.dataset.code === code);
+    });
+    // 池子列表
+    document.querySelectorAll('#block-panel tbody tr[data-pool-idx]').forEach((tr) => {
+      // pool selected already handled via state.poolSelected
+    });
+  }
+
+  // mode: 'ths' 资料(iframe) | 'tv' 图表(新窗口，TV 禁止嵌入)
+  function openStockDetail(code, name, opts = {}) {
+    if (!code) return;
+    const mode = opts.mode === 'tv' ? 'tv' : 'ths';
+    detailMode = mode;
+
+    // TradingView 拒绝 iframe（X-Frame-Options），只能新窗口
+    if (mode === 'tv') {
+      window.open(stockTvUrl(code), '_blank', 'noopener');
+      state.stockNavIndex = state.stockNavList.findIndex((s) => s.code === code);
+      syncDetailExtLink(code, 'tv');
+      return;
+    }
+
+    els.stockCard.style.display = '';
+    state.stockNavIndex = state.stockNavList.findIndex((s) => s.code === code);
+    const url = stockPageUrl(code);
+    syncDetailExtLink(code, 'ths');
+    els.stockListView.classList.add('hidden');
+    els.stockDetail.classList.add('open');
+    els.stockDetail.setAttribute('aria-hidden', 'false');
+    highlightStockRow(code);
+
+    const entry = showCachedFrame(code, 'ths');
+    const needLoad = !entry.iframe.src || entry.iframe.src === 'about:blank'
+      || !String(entry.iframe.src).includes(code);
+    clearDetailLoadTimer();
+    if (needLoad) {
+      entry.loaded = false;
+      setDetailLoadingUI(true, false);
+      entry.iframe.src = url;
+      state.detailLoadTimer = setTimeout(() => {
+        if (!entry.loaded && entry.iframe.classList.contains('active')) {
+          setDetailLoadingUI(true, true);
+        }
+      }, 8000);
+    } else if (entry.loaded) {
+      setDetailLoadingUI(false);
+    } else {
+      setDetailLoadingUI(true, false);
+      state.detailLoadTimer = setTimeout(() => {
+        if (!entry.loaded && entry.iframe.classList.contains('active')) {
+          setDetailLoadingUI(true, true);
+        }
+      }, 8000);
+    }
+
+    updateStockDetailNav();
+  }
+
+  function updateStockDetailNav() {
+    const { stockNavList, stockNavIndex } = state;
+    const total = stockNavList.length;
+    const sel = els.stockDetailSelect;
+    sel.innerHTML = '';
+    stockNavList.forEach((s, i) => {
+      const opt = document.createElement('option');
+      opt.value = i;
+      opt.textContent = `${s.code} ${s.name}`;
+      sel.appendChild(opt);
+    });
+    if (stockNavIndex >= 0 && stockNavIndex < total) sel.value = stockNavIndex;
+    sel.style.display = total ? '' : 'none';
+    if (total) {
+      const prev = stockNavList[stockNavIndex - 1];
+      const next = stockNavList[stockNavIndex + 1];
+      els.stockDetailPrev.title = prev ? `上一个：${prev.code} ${prev.name}` : '上一个';
+      els.stockDetailNext.title = next ? `下一个：${next.code} ${next.name}` : '下一个';
+    }
+    els.stockDetailPrev.disabled = stockNavIndex <= 0;
+    els.stockDetailNext.disabled = stockNavIndex >= total - 1;
+  }
+
+  function navigateStock(delta) {
+    const idx = state.stockNavIndex + delta;
+    if (idx < 0 || idx >= state.stockNavList.length) return;
+    const s = state.stockNavList[idx];
+    openStockDetail(s.code, s.name);
+  }
+
+  function closeStockDetail() {
+    clearDetailLoadTimer();
+    els.stockDetail.classList.remove('open', 'loading');
+    setDetailLoadingUI(false);
+    els.stockListView.classList.remove('hidden');
+    els.stockDetail.setAttribute('aria-hidden', 'true');
+    hideAllFrames();
+    highlightStockRow('');
+    // 保留缓存 iframe，不销毁
+  }
+
+  const CACHE_EVENTS = 'limit_up_events_';
+  // 盘中事件缓存有效期；收盘后可长期用
+  const EVENTS_TTL_MS = 5 * 60 * 1000;
+
+  function loadCacheEvents() {
+    try {
+      const raw = localStorage.getItem(CACHE_EVENTS);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      // 新格式 { savedAt, data }；旧格式直接是接口 JSON
+      if (parsed && typeof parsed === 'object' && 'data' in parsed && 'savedAt' in parsed) {
+        return { savedAt: Number(parsed.savedAt) || 0, data: parsed.data };
+      }
+      return { savedAt: 0, data: parsed };
+    } catch (_) { return null; }
+  }
+
+  function saveCacheEvents(data) {
+    try {
+      localStorage.setItem(CACHE_EVENTS, JSON.stringify({ savedAt: Date.now(), data }));
+    } catch (_) {}
+  }
+
+  function isEventsCacheFresh(entry) {
+    if (!entry || entry.data == null) return false;
+    const savedAt = Number(entry.savedAt) || 0;
+    if (!savedAt) return false; // 旧缓存无时间戳，不当作新鲜
+    const sd = new Date(savedAt);
+    const savedYmd = `${sd.getFullYear()}${String(sd.getMonth() + 1).padStart(2, '0')}${String(sd.getDate()).padStart(2, '0')}`;
+    const now = new Date();
+    const closed = now.getHours() * 60 + now.getMinutes() >= 15 * 60;
+    // 已收盘：当日缓存只要是今天写的即可
+    if (closed) return savedYmd === (state.today || savedYmd);
+    // 盘中：5 分钟内算新鲜
+    return Date.now() - savedAt < EVENTS_TTL_MS;
+  }
+
+  function normalizeEventJson(json) {
+    if (!json) return null;
+    // 兼容误存的 { savedAt, data }
+    if (json && typeof json === 'object' && 'savedAt' in json && 'data' in json && !Array.isArray(json.data?.data) && Array.isArray(json.data)) {
+      // data 直接是 days 数组
+      return { data: json.data };
+    }
+    if (json && typeof json === 'object' && 'savedAt' in json && 'data' in json) {
+      return json.data;
+    }
+    return json;
+  }
+
+  async function loadEvents(opts = {}) {
+    const { force = false } = opts;
+    try {
+      let json = null;
+
+      // 非强制：优先内存 / 新鲜缓存，避免频繁打 news 接口
+      if (!force) {
+        if (state.eventRaw) {
+          json = state.eventRaw;
+        } else {
+          const cached = loadCacheEvents();
+          if (cached && isEventsCacheFresh(cached)) {
+            json = normalizeEventJson(cached.data);
+          }
+        }
+      }
+
+      if (!json) {
+        try {
+          // news 域常被浏览器直连 403/CORS，失败时自动轮询代理
+          json = await getJson(API.eventList(), { retryProxy: true });
+          if (json) saveCacheEvents(json);
+        } catch (e) {
+          // 失败回退：内存 → 任意本地缓存
+          const cached = loadCacheEvents();
+          json = state.eventRaw || normalizeEventJson(cached?.data) || null;
+          if (!json) {
+            const hint = e.status === 403
+              ? '接口拒绝直连（403）。请打开「设置 → 代理设置」选择 corsproxy.io 后点查询重试。'
+              : `事件加载失败: ${e.message}`;
+            els.eventPanel.innerHTML = msgHtml('warn', hint);
+            els.eventMeta.textContent = '';
+            return;
+          }
+        }
+      }
+
+      json = normalizeEventJson(json) || json;
+      state.eventRaw = json;
+      const days = Array.isArray(json?.data) ? json.data : (Array.isArray(json) ? json : []);
+      state.events = days;
+      renderEvents();
+    } catch (e) {
+      // 事件失败不影响板块
+      try {
+        els.eventPanel.innerHTML = msgHtml('warn', `事件加载异常: ${e.message || e}`);
+        els.eventMeta.textContent = '';
+      } catch (_) {}
+    }
+  }
+
+  function fmtHeat(n) {
+    const v = Number(n);
+    if (!Number.isFinite(v)) return '-';
+    if (v >= 1e4) {
+      const w = v / 1e4;
+      return (w >= 100 ? w.toFixed(0) : w.toFixed(w >= 10 ? 0 : 1)) + '万';
+    }
+    return String(Math.round(v));
+  }
+
+  function limitUpLabel(s) {
+    if (s === 1) return '涨停';
+    if (s === 2) return '炸板';
+    return '';
+  }
+
+  function heatClass(n) {
+    const v = Number(n) || 0;
+    if (v >= 3e5) return '';
+    if (v >= 5e4) return 'mid';
+    return 'low';
+  }
+
+  function matchBlockByEvent(ev) {
+    const names = new Set();
+    const codes = new Set();
+    if (ev.investmentDirection) names.add(ev.investmentDirection);
+    (ev.themes || []).forEach((t) => {
+      if (t.indexName) names.add(t.indexName);
+      if (t.showName) names.add(t.showName);
+      if (t.indexCode) codes.add(String(t.indexCode));
+    });
+    // exact name/code first
+    let idx = state.blocks.findIndex((b) => codes.has(String(b.code)) || names.has(b.name));
+    if (idx >= 0) return idx;
+    // fuzzy: block name contained in theme/direction
+    idx = state.blocks.findIndex((b) =>
+      [...names].some((n) => n.includes(b.name) || b.name.includes(n))
+    );
+    return idx;
+  }
+
+  function renderEvents() {
+    const panel = els.eventPanel;
+    const meta = els.eventMeta;
+    const targetIso = state.date ? `${state.date.slice(0,4)}-${state.date.slice(4,6)}-${state.date.slice(6,8)}` : '';
+    const dayEvents = state.events.find(d => d.date === targetIso);
+
+    if (!dayEvents || !dayEvents.eventList || !dayEvents.eventList.length) {
+      panel.innerHTML = msgHtml('loading', '当日无热点事件');
+      meta.textContent = '';
+      return;
+    }
+
+    const events = [...dayEvents.eventList].sort((a, b) => (Number(b.heat) || 0) - (Number(a.heat) || 0));
+    meta.textContent = `${events.length} 条`;
+
+    let html = '<div class="ev-list">';
+    events.forEach((ev, i) => {
+      const themes = (ev.themes || []).slice(0, 4).map(t => `<span class="tag">${esc(t.showName)}</span>`).join('');
+      const more = (ev.themes || []).length > 4 ? `<span class="tag">+${ev.themes.length - 4}</span>` : '';
+      const s = (ev.topStocks || [])[0];
+      let stockHtml = '<span class="ev-stock">—</span>';
+      if (s) {
+        const label = limitUpLabel(s.limitUpState);
+        const badge = label ? `<span class="tag ${label === '涨停' ? 'first' : 'back'}">${label}</span>` : '';
+        const rate = Number(s.risePercent);
+        const rateStr = Number.isFinite(rate) ? `${rate.toFixed(2)}%` : '-';
+        const rateCls = Number.isFinite(rate) && rate >= 0 ? 'up' : 'down';
+        stockHtml = `<div class="ev-stock"><b>${esc(s.stockName)}</b><span class="code">${esc(s.stockCode)}</span><span class="rate ${rateCls}">${esc(rateStr)}</span>${badge}</div>`;
+      }
+      html += `<article class="ev-item" data-ev="${i}" title="点击定位关联板块">
+        <div class="ev-top">
+          <div class="ev-heat ${heatClass(ev.heat)}">${esc(fmtHeat(ev.heat))}</div>
+          <div class="ev-title" title="${esc(ev.title)}">${esc(ev.title)}</div>
+          <div class="ev-dir" title="${esc(ev.investmentDirection || '')}">${esc(ev.investmentDirection || '-')}</div>
+        </div>
+        <div class="ev-themes">${themes}${more}</div>
+        ${stockHtml}
+      </article>`;
+    });
+    html += '</div>';
+    panel.innerHTML = html;
+
+    panel.querySelectorAll('.ev-item').forEach((el) => {
+      el.addEventListener('click', () => {
+        const ev = events[Number(el.dataset.ev)];
+        if (!ev || !state.blocks.length) return;
+        const idx = matchBlockByEvent(ev);
+        if (idx >= 0) selectBlock(idx);
+        else setStatus(`未匹配到板块: ${ev.investmentDirection || '事件'}`);
+      });
+    });
+  }
+
+  function bindRawToggle(root) {
+    root.querySelectorAll('.raw-toggle').forEach((el) => {
+      el.addEventListener('click', () => {
+        const pre = document.getElementById(el.dataset.raw);
+        if (pre) pre.classList.toggle('open');
+      });
+    });
+  }
+
+  function selectBlock(idx) {
+    state.selected = idx;
+    state.tagFilter = 'all';
+    closeStockDetail();
+    renderBlocks();
+    renderStocks();
+  }
+
+  function setDateByYmd(ymd, reload = true) {
+    if (!ymd) return;
+    let idx = state.dates.indexOf(ymd);
+    if (idx === -1) {
+      // 选中非交易日：吸附到最近交易日
+      idx = -1;
+      for (let i = state.dates.length - 1; i >= 0; i--) {
+        if (state.dates[i] <= ymd) { idx = i; break; }
+      }
+      if (idx === -1) idx = 0;
+      setStatus(`${fmtDate(ymd)} 非交易日，已切到 ${fmtDate(state.dates[idx])}`);
+    }
+    state.index = idx;
+    state.date = state.dates[idx] || ymd;
+    updateDateUi();
+    if (reload) loadBlocks();
+  }
+
+  // ---------- data flow ----------
+  async function initDates() {
+    const seed = todayYmd();
+    state.today = seed;
+    try {
+      const json = await getJson(API.tradeDay(seed), { retryProxy: true });
+      const parsed = parseTradeDay(json, seed);
+      state.dates = parsed.dates;
+      state.tradeDayMap = parsed.map;
+      state.todayIsTradeDay = parsed.isTrade;
+      fillDateSelect();
+
+      let idx = state.dates.indexOf(seed);
+      if (idx === -1) {
+        idx = -1;
+        for (let i = state.dates.length - 1; i >= 0; i--) {
+          if (state.dates[i] <= seed) { idx = i; break; }
+        }
+        if (idx === -1) idx = state.dates.length - 1;
+      }
+      state.index = Math.max(0, idx);
+      state.date = state.dates[state.index] || seed;
+      updateDateUi();
+      if (!state.todayIsTradeDay) {
+        setStatus(`今天 ${fmtDate(seed)} 非交易日，已切到 ${fmtDate(state.date)}`);
+      }
+      return true;
+    } catch (e) {
+      state.dates = [seed];
+      state.index = 0;
+      state.date = seed;
+      state.todayIsTradeDay = null;
+      state.tradeDayMap = {};
+      fillDateSelect();
+      updateDateUi();
+      els.blockPanel.innerHTML = msgHtml(
+        'warn',
+        `交易日历不可用（${e.message}），无法判断是否交易日，已回退到 ${fmtDate(seed)}。`
+      );
+      return false;
+    }
+  }
+
+  const CACHE_PREFIX = 'limit_up_blocks_';
+  const CACHE_POOL_PREFIX = {
+    limitUp: 'limit_up_pool_',
+    openLimit: 'open_limit_pool_',
+    limitDown: 'lower_limit_pool_',
+  };
+  const MARKET_CLOSE_MIN = 15 * 60; // 15:00
+
+  function isAfterMarketClose(d = new Date()) {
+    return d.getHours() * 60 + d.getMinutes() >= MARKET_CLOSE_MIN;
+  }
+
+  function ymdOfDate(d) {
+    return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+  }
+
+  function isHistoricalDate(ymd) {
+    return !!ymd && ymd < state.today;
+  }
+
+  /** 历史日，或交易日当天已收盘 → 可尝试定稿缓存 */
+  function isFrozenDate(ymd) {
+    if (!ymd) return false;
+    if (ymd < state.today) return true;
+    if (ymd === state.today) return isAfterMarketClose();
+    return false;
+  }
+
+  /**
+   * 缓存是否可作定稿使用：
+   * - 历史日：有数据即可（旧格式无 savedAt 也接受）
+   * - 当日：必须有 savedAt，且写入时间 ≥ 当日 15:00
+   * 盘中写入的缓存不能在收盘后当定稿用。
+   */
+  function isValidFrozenCache(ymd, entry) {
+    if (!entry) return false;
+    const savedAt = entry.savedAt != null ? Number(entry.savedAt) : NaN;
+    if (ymd < state.today) {
+      // 历史：优先要求有 payload；有 savedAt 则校验写入日 ≥ 目标日
+      if (!Number.isFinite(savedAt)) return true; // 兼容旧缓存
+      const sd = new Date(savedAt);
+      return ymdOfDate(sd) >= ymd;
+    }
+    if (ymd === state.today) {
+      if (!Number.isFinite(savedAt)) return false; // 当日必须有写入时间
+      const sd = new Date(savedAt);
+      if (ymdOfDate(sd) !== ymd) return false;
+      return isAfterMarketClose(sd);
+    }
+    return false;
+  }
+
+  function wrapCache(data) {
+    return { savedAt: Date.now(), data };
+  }
+
+  function unwrapBlockCache(parsed) {
+    if (!parsed) return null;
+    // 新格式 { savedAt, data: apiJson|array|{data:[]} }
+    if (parsed && typeof parsed === 'object' && 'data' in parsed && 'savedAt' in parsed) {
+      const list = extractBlockList(parsed.data) || extractBlockList(parsed);
+      return {
+        savedAt: parsed.savedAt,
+        data: Array.isArray(list) ? { data: list } : null,
+        entry: parsed,
+      };
+    }
+    // 旧格式：直接是接口 JSON / 数组
+    const list = extractBlockList(parsed);
+    return {
+      savedAt: null,
+      data: Array.isArray(list) ? { data: list } : null,
+      entry: { savedAt: null, data: parsed },
+    };
+  }
+
+  function loadCache(date, opts = {}) {
+    const { requireFrozen = false } = opts;
+    try {
+      const raw = localStorage.getItem(CACHE_PREFIX + date);
+      if (!raw) return null;
+      const unwrapped = unwrapBlockCache(JSON.parse(raw));
+      if (!unwrapped || !unwrapped.data) return null;
+      if (requireFrozen && !isValidFrozenCache(date, unwrapped.entry)) return null;
+      return unwrapped.data; // { data: blocks[] }
+    } catch (_) { return null; }
+  }
+
+  function saveCache(date, data) {
+    try {
+      // 统一存 { data: blocks[] }，避免多层包裹导致读不出来
+      const list = extractBlockList(data);
+      if (!Array.isArray(list) || !list.length) return;
+      localStorage.setItem(CACHE_PREFIX + date, JSON.stringify(wrapCache({ data: list })));
+    } catch (_) {}
+  }
+
+  function loadPoolCache(kind, date, opts = {}) {
+    const { requireFrozen = false, allowAny = false } = opts;
+    try {
+      const raw = localStorage.getItem((CACHE_POOL_PREFIX[kind] || '') + date);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed) return null;
+      // 新格式带 savedAt；旧格式直接 {list,...}
+      const entry = parsed.savedAt != null
+        ? parsed
+        : { savedAt: null, list: parsed.list, total: parsed.total, page: parsed.page, raw: parsed.raw };
+      if (!Array.isArray(entry.list)) return null;
+      if (requireFrozen && !isValidFrozenCache(date, entry)) return null;
+      if (!allowAny && !requireFrozen) {
+        // 默认：定稿场景才走缓存
+      }
+      return {
+        list: entry.list,
+        total: entry.total ?? entry.list.length,
+        page: entry.page || 1,
+        raw: entry.raw || null,
+        savedAt: entry.savedAt,
+      };
+    } catch (_) { return null; }
+  }
+
+  function savePoolCache(kind, date, data) {
+    try {
+      localStorage.setItem((CACHE_POOL_PREFIX[kind] || '') + date, JSON.stringify({
+        savedAt: Date.now(),
+        list: data.list,
+        total: data.total,
+        page: data.page,
+        raw: data.raw || null,
+      }));
+    } catch (_) {}
+  }
+
+  function blocksFromJson(json) {
+    if (!json) return [];
+    try {
+      return parseBlocks(json);
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function clearBlockCache(date) {
+    try { localStorage.removeItem(CACHE_PREFIX + date); } catch (_) {}
+  }
+
+  async function fetchBlockTopJson() {
+    return getJson(API.blockTop(state.date), { retryProxy: true });
+  }
+
+  async function loadBlocks() {
+    if (!state.date || state.loading) return;
+    state.loading = true;
+    els.btnLoad.disabled = true;
+    setStatus('加载中...');
+    els.blockPanel.innerHTML = skelHtml(8);
+    els.stockPanel.innerHTML = skelHtml(6);
+    if (els.eventPanel && !els.eventPanel.querySelector('.ev-list')) {
+      els.eventPanel.innerHTML = skelHtml(4);
+    }
+    els.tagFilters.hidden = true;
+    state.heightFilter = 'all';
+    els.blockMeta.textContent = '';
+    els.stockMeta.textContent = '';
+    state.blocks = [];
+    state.selected = -1;
+    state.rawBlock = null;
+    state.tagFilter = 'all';
+    state.blockView = 'block';
+    state.openLimitData = null;
+    state.limitUpData = null;
+    state.limitDownData = null;
+    state.poolSelected = -1;
+    document.querySelectorAll('#block-tabs .tab-btn').forEach((b) => b.classList.toggle('active', b.dataset.view === 'block'));
+    els.stockCard.style.display = '';
+    closeStockDetail();
+
+    const frozen = isFrozenDate(state.date);
+    let json = null;
+    let fromCache = false;
+    let cacheFallback = false;
+
+    // 1) 定稿缓存：必须能解析出板块列表，否则当无效
+    if (frozen) {
+      const cached = loadCache(state.date, { requireFrozen: true });
+      if (cached && blocksFromJson(cached).length) {
+        json = cached;
+        fromCache = true;
+      } else if (cached) {
+        clearBlockCache(state.date);
+      }
+    }
+
+    // 2) 缓存无效 → 请求接口（盘中始终走这里）
+    if (!json) {
+      try {
+        json = await fetchBlockTopJson();
+        const n = blocksFromJson(json).length;
+        if (n > 0 && isFrozenDate(state.date)) saveCache(state.date, json);
+        if (n === 0) {
+          // 空响应：再试一次任意缓存兜底
+          const any = loadCache(state.date, { requireFrozen: false });
+          if (any && blocksFromJson(any).length) {
+            json = any;
+            fromCache = true;
+            cacheFallback = true;
+          }
+        }
+      } catch (e) {
+        // 网络失败：任意缓存兜底（需能解析）
+        const any = loadCache(state.date, { requireFrozen: false });
+        if (any && blocksFromJson(any).length) {
+          json = any;
+          fromCache = true;
+          cacheFallback = true;
+        } else {
+          const hint = !els.proxyUrl.value.trim()
+            ? '可能是 CORS / 403，请打开「设置 → 代理设置」配置代理（推荐 corsproxy.io）后重试。'
+            : `错误: ${e.message}`;
+          els.blockPanel.innerHTML = msgHtml('error', `板块请求失败: ${e.message}`) + msgHtml('warn', hint);
+          els.stockPanel.innerHTML = msgHtml('error', '无法加载个股');
+          setStatus('失败');
+          state.loading = false;
+          els.btnLoad.disabled = false;
+          loadEvents({ force: true });
+          return;
+        }
+      }
+    }
+
+    if (json) {
+      try {
+        state.rawBlock = json;
+        state.blocks = blocksFromJson(json);
+        if (!state.blocks.length) {
+          const nonTrade = state.dateIsTradeDay === false;
+          els.blockPanel.innerHTML =
+            msgHtml('warn', nonTrade
+              ? `当日非交易日（${fmtDate(state.date)}），无板块涨停数据`
+              : `无板块数据（${fmtDate(state.date)}）`) +
+            msgHtml('warn', nonTrade
+              ? '可切换到最近交易日查看，或点「查询」刷新。'
+              : '若为交易日仍为空：请确认日期、代理后点「查询」重试。') +
+            rawToggleHtml('raw-block');
+          const raw = $('raw-block');
+          if (raw) raw.textContent = JSON.stringify(json, null, 2);
+          bindRawToggle(els.blockPanel);
+          els.stockPanel.innerHTML = msgHtml('loading', '无数据');
+          setStatus('无板块数据');
+        } else {
+          state.selected = 0;
+          state.blockView = 'block';
+          renderBlocks();
+          renderStocks();
+          if (fromCache) {
+            const closedToday = state.date === state.today && isAfterMarketClose();
+            setStatus(cacheFallback
+              ? `缓存 ${fmtDate(state.date)} (网络不可用)`
+              : closedToday
+                ? `缓存 ${fmtDate(state.date)} (15:00后)`
+                : `缓存 ${fmtDate(state.date)}`);
+          } else {
+            setStatus(new Date().toLocaleTimeString('zh-CN'));
+          }
+        }
+      } catch (e) {
+        els.blockPanel.innerHTML = msgHtml('error', `板块解析失败: ${e.message || e}`);
+        els.stockPanel.innerHTML = msgHtml('error', '无法加载个股');
+        setStatus('解析失败');
+        clearBlockCache(state.date);
+      }
+    }
+
+    state.loading = false;
+    els.btnLoad.disabled = false;
+    Promise.resolve().then(() => loadEvents({ force: true })).catch(() => {});
+  }
+
+  function shiftDate(delta) {
+    const next = state.index + delta;
+    if (next < 0 || next >= state.dates.length) return;
+    setDateByYmd(state.dates[next], true);
+  }
+
+  function mdCell(v) {
+    return String(v ?? '-').replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
+  }
+
+  function poolRowMd(s) {
+    const code = getVal(s, ['code']) || '-';
+    const name = getVal(s, ['name']) || '-';
+    const rate = getVal(s, ['change_rate']);
+    const highDays = getVal(s, ['high_days']) || '-';
+    const limitType = getVal(s, ['limit_up_type']) || '';
+    const changeTag = getVal(s, ['change_tag']) || '';
+    const ct = CHANGE_TAG[changeTag];
+    const firstTs = getVal(s, ['first_limit_up_time']);
+    const lastTs = getVal(s, ['last_limit_up_time']);
+    const openNum = getVal(s, ['open_num']);
+    const orderAmt = getVal(s, ['order_amount']);
+    const turn = getVal(s, ['turnover_rate']);
+    const reason = getVal(s, ['reason_type']) || '';
+    const tagStr = [ct?.label, limitType, reason].filter(Boolean).join(' ');
+    return `| ${mdCell(code)} | ${mdCell(name)} | ${mdCell(rate != null ? fmtPct(rate) : '-')} | ${mdCell(highDays)} | ${mdCell(fmtTime(firstTs))} | ${mdCell(fmtTime(lastTs))} | ${mdCell(openNum != null ? openNum : '-')} | ${mdCell(fmtMoney(orderAmt))} | ${mdCell(turn != null ? fmtPct(turn) : '-')} | ${mdCell(tagStr || '-')} |`;
+  }
+
+  function poolTableMd(list) {
+    if (!list || !list.length) return '_（无数据）_';
+    const head = `| 代码 | 名称 | 涨幅 | 连板 | 首次封板 | 最后封板 | 炸板次数 | 封单金额 | 换手 | 标签 |\n|------|------|------|------|---------|---------|---------|---------|------|------|`;
+    return `${head}\n${list.map(poolRowMd).join('\n')}`;
+  }
+
+  function poolTotalFromResp(kind, d, listLen) {
+    const pageTotal = Number(d?.page?.total);
+    const pageCount = Number(d?.page?.count);
+    const pageLimit = Number(d?.page?.limit) || 50;
+    // page.total 有时是条数，有时像页数；优先用 count 字段
+    const countHint = kind === 'limitUp'
+      ? Number(d?.limit_up_count?.today?.num)
+      : kind === 'limitDown'
+        ? Number(d?.limit_down_count?.today?.num)
+        : Number(d?.limit_up_count?.today?.open_num);
+    if (Number.isFinite(countHint) && countHint > 0) return countHint;
+    if (Number.isFinite(pageTotal) && pageTotal > 0) {
+      // total 很小且 count 较大时，total 更像页数
+      if (Number.isFinite(pageCount) && pageCount > 1 && pageTotal <= pageCount) {
+        return pageTotal * pageLimit;
+      }
+      return pageTotal;
+    }
+    if (Number.isFinite(pageCount) && pageCount > 0) return pageCount * pageLimit;
+    return listLen;
+  }
+
+  function isPoolComplete(pack) {
+    if (!pack || !Array.isArray(pack.list) || !pack.list.length) return false;
+    const total = Number(pack.total) || 0;
+    if (total > 0 && pack.list.length >= total) return true;
+    // total 未知但标记 complete
+    return !!pack.complete;
+  }
+
+  async function fetchAllPoolPages(kind, seed = null) {
+    const meta = poolMeta(kind);
+    const apiFn = meta.api;
+    const label = meta.label;
+    const pageSize = 50;
+    let list = Array.isArray(seed?.list) ? [...seed.list] : [];
+    let total = Number(seed?.total) || 0;
+    let raw = seed?.raw || null;
+    let page = 1;
+    if (list.length && total > 0) {
+      page = Math.floor(list.length / pageSize) + 1;
+    }
+    const seen = new Set(list.map((x) => String(x.code || '')).filter(Boolean));
+    const maxPages = 40;
+
+    while (page <= maxPages) {
+      setStatus(`加载${label}全量 ${list.length}${total ? '/' + total : ''} · 第${page}页`);
+      const json = await getJson(apiFn(state.date, page, pageSize), { retryProxy: true });
+      const d = json?.data || {};
+      const chunk = Array.isArray(d.info) ? d.info : [];
+      raw = raw || json;
+      total = poolTotalFromResp(kind, d, list.length + chunk.length) || total;
+      let added = 0;
+      chunk.forEach((item) => {
+        const c = String(item.code || '');
+        if (c && !seen.has(c)) {
+          seen.add(c);
+          list.push(item);
+          added += 1;
+        } else if (!c) {
+          list.push(item);
+          added += 1;
+        }
+      });
+      // 空页 / 无新增 / 已满
+      if (!chunk.length || added === 0) break;
+      if (total > 0 && list.length >= total) break;
+      // API 返回不足一页，视为结束
+      if (chunk.length < pageSize) break;
+      page += 1;
+    }
+
+    return {
+      list,
+      total: total || list.length,
+      page,
+      raw,
+      complete: true,
+    };
+  }
+
+  async function ensurePoolLoaded(kind) {
+    const meta = poolMeta(kind);
+    const dataKey = meta.dataKey;
+    const label = meta.label;
+
+    // 1) 内存已完整
+    if (isPoolComplete(state[dataKey])) return state[dataKey];
+
+    // 2) 定稿缓存完整则用
+    if (isFrozenDate(state.date)) {
+      const cached = loadPoolCache(kind, state.date, { requireFrozen: true });
+      if (isPoolComplete(cached) || (cached?.list?.length && cached.list.length >= (cached.total || 0) && (cached.total || 0) > 0)) {
+        const pack = { ...cached, complete: true };
+        state[dataKey] = pack;
+        return pack;
+      }
+      // 缓存不完整：以缓存为种子继续翻页
+      if (cached?.list?.length) state[dataKey] = cached;
+    }
+
+    // 3) 翻页拉全量（可从已有半截列表续拉）
+    try {
+      const seed = state[dataKey];
+      const pack = await fetchAllPoolPages(kind, isPoolComplete(seed) ? null : seed);
+      state[dataKey] = pack;
+      if (isFrozenDate(state.date) && pack.list.length) savePoolCache(kind, state.date, pack);
+      // 若当前正看该池，刷新列表为全量
+      if (state.blockView === kind) {
+        renderPoolSideList(kind, { openFirst: false });
+      }
+      setStatus(`${label}全量 ${pack.list.length} 只`);
+      return pack;
+    } catch (e) {
+      const cached = loadPoolCache(kind, state.date, { requireFrozen: false, allowAny: true });
+      if (cached?.list?.length) {
+        state[dataKey] = { ...cached, complete: isPoolComplete(cached) };
+        return state[dataKey];
+      }
+      if (state[dataKey]?.list?.length) return state[dataKey];
+      throw e;
+    }
+  }
+
+  function openExportModal() {
+    if (!els.exportModal) return;
+    const both = els.exportModal.querySelector('input[name="export-scope"][value="both"]');
+    if (both) both.checked = true;
+    els.exportModal.classList.add('open');
+    els.exportModal.setAttribute('aria-hidden', 'false');
+  }
+
+  function closeExportModal() {
+    if (!els.exportModal) return;
+    els.exportModal.classList.remove('open');
+    els.exportModal.setAttribute('aria-hidden', 'true');
+  }
+
+  function exportBlockReport() {
+    const block = state.blocks[state.selected];
+    if (!block || !block.stocks.length) {
+      setStatus('请先选择一个有数据的板块');
+      return;
+    }
+
+    const prompt = els.promptText.value.trim() || DEFAULT_PROMPT;
+    const dateStr = fmtDate(state.date);
+    const stocks = block.stocks;
+    const stockLines = stocks.map((s) => {
+      const tags = (s.tags || []).join(' ');
+      const reason = s.reasonType || s.reasonInfo || '-';
+      const time = fmtTime(s.firstTime);
+      return `| ${mdCell(s.code)} | ${mdCell(s.name)} | ${mdCell(fmtPct(s.changeRate))} | ${mdCell(s.continueNum >= 2 ? s.continueNum + '连板' : '首板')} | ${mdCell(time)} | ${mdCell(`${tags} ${reason}`.trim())} |`;
+    }).join('\n');
+
+    const stockTable = `| 代码 | 名称 | 涨幅 | 连板 | 封板时间 | 概念标签 |\n|------|------|------|------|---------|---------|\n${stockLines}`;
+
+    const dataSection = `---
+
+## 待分析数据
+
+**核心事件驱动**：（请用户在此补充一句话）
+
+**日期**：${dateStr}
+
+**板块**：${block.name}（涨停 ${block.limitUpNum} 只，板块涨幅 ${fmtPct(block.change)}）
+
+**涨停个股名单**：
+
+${stockTable}
+`;
+
+    const fullContent = `${prompt}\n${dataSection}`;
+    downloadBlob(`复盘报告_${state.date}_${block.name}.md`, fullContent, 'text/markdown;charset=utf-8');
+    setStatus(`已导出: ${block.name} (${stocks.length} 只)`);
+  }
+
+  async function exportPoolReport(scope) {
+    const wantLimit = scope === 'both' || scope === 'all' || scope === 'limitUp';
+    const wantOpen = scope === 'both' || scope === 'all' || scope === 'openLimit';
+    const wantDown = scope === 'all' || scope === 'limitDown';
+    const prompt = els.promptText.value.trim() || DEFAULT_PROMPT;
+    const dateStr = fmtDate(state.date);
+    const parts = [];
+    let totalN = 0;
+    const labels = [];
+
+    try {
+      if (wantLimit) {
+        const pack = await ensurePoolLoaded('limitUp');
+        const list = pack?.list || [];
+        totalN += list.length;
+        labels.push(`涨停${list.length}`);
+        parts.push(`### 涨停池（${list.length} 只）\n\n${poolTableMd(list)}`);
+      }
+      if (wantOpen) {
+        const pack = await ensurePoolLoaded('openLimit');
+        const list = pack?.list || [];
+        totalN += list.length;
+        labels.push(`炸板${list.length}`);
+        parts.push(`### 炸板池（${list.length} 只）\n\n${poolTableMd(list)}`);
+      }
+      if (wantDown) {
+        const pack = await ensurePoolLoaded('limitDown');
+        const list = pack?.list || [];
+        totalN += list.length;
+        labels.push(`跌停${list.length}`);
+        parts.push(`### 跌停池（${list.length} 只）\n\n${poolTableMd(list)}`);
+      }
+    } catch (e) {
+      setStatus(`导出失败: ${e.message}`);
+      return;
+    }
+
+    if (!totalN) {
+      setStatus('所选范围暂无数据，请先加载涨停/炸板/跌停');
+      return;
+    }
+
+    const scopeLabelMap = {
+      both: '涨停+炸板',
+      all: '涨停+炸板+跌停',
+      limitUp: '涨停',
+      openLimit: '炸板',
+      limitDown: '跌停',
+    };
+    const scopeLabel = scopeLabelMap[scope] || scope;
+    const dataSection = `---
+
+## 待分析数据
+
+**核心事件驱动**：（请用户在此补充一句话）
+
+**日期**：${dateStr}
+
+**数据范围**：${scopeLabel}
+
+**名单统计**：${labels.join(' / ')}
+
+${parts.join('\n\n')}
+`;
+
+    const fullContent = `${prompt}\n${dataSection}`;
+    downloadBlob(`复盘报告_${state.date}_${scopeLabel}.md`, fullContent, 'text/markdown;charset=utf-8');
+    setStatus(`已导出: ${scopeLabel} (${labels.join(' · ')})`);
+  }
+
+  function exportReport() {
+    if (state.blockView === 'limitUp' || state.blockView === 'openLimit' || state.blockView === 'limitDown') {
+      openExportModal();
+      return;
+    }
+    exportBlockReport();
+  }
+
+  // ---------- events ----------
+  function openSettings(pane) {
+    els.settingsMenu.classList.add('open');
+    els.btnSettings.classList.add('active');
+    if (pane) switchSettingsPane(pane);
+  }
+  function closeSettings() {
+    els.settingsMenu.classList.remove('open');
+    els.btnSettings.classList.remove('active');
+  }
+  function toggleSettings() {
+    if (els.settingsMenu.classList.contains('open')) closeSettings();
+    else openSettings();
+  }
+  function switchSettingsPane(name) {
+    els.settingsMenu.querySelectorAll('.menu-tab').forEach((t) => {
+      t.classList.toggle('active', t.dataset.pane === name);
+    });
+    els.settingsMenu.querySelectorAll('.menu-pane').forEach((p) => {
+      p.classList.toggle('active', p.id === `pane-${name}`);
+    });
+  }
+
+  els.btnSettings.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleSettings();
+  });
+  els.btnSettingsClose.addEventListener('click', closeSettings);
+  els.settingsMenu.querySelectorAll('.menu-tab').forEach((tab) => {
+    tab.addEventListener('click', () => switchSettingsPane(tab.dataset.pane));
+  });
+  els.settingsMenu.addEventListener('click', (e) => e.stopPropagation());
+  document.addEventListener('click', () => closeSettings());
+
+
+  els.proxyPreset.addEventListener('change', () => {
+    if (els.proxyPreset.value) els.proxyUrl.value = els.proxyPreset.value;
+    saveProxy();
+  });
+  els.proxyUrl.addEventListener('change', saveProxy);
+  els.btnPrev.addEventListener('click', () => shiftDate(-1));
+  els.btnNext.addEventListener('click', () => shiftDate(1));
+  els.btnLoad.addEventListener('click', () => loadBlocks());
+  document.getElementById('block-tabs').addEventListener('click', (e) => {
+    const btn = e.target.closest('.tab-btn');
+    if (!btn || btn.classList.contains('active')) return;
+    state.blockView = btn.dataset.view;
+    document.querySelectorAll('#block-tabs .tab-btn').forEach((b) => b.classList.toggle('active', b === btn));
+    els.stockCard.style.display = '';
+    if (state.blockView === 'block') {
+      els.blockPanel.onscroll = null;
+      closeStockDetail();
+      renderBlocks();
+      renderStocks();
+    } else if (state.blockView === 'limitUp') {
+      state.poolSelected = 0;
+      loadLimitUpPool(1, false);
+    } else if (state.blockView === 'openLimit') {
+      state.poolSelected = 0;
+      loadOpenLimitPool(1, false);
+    } else if (state.blockView === 'limitDown') {
+      state.poolSelected = 0;
+      loadLimitDownPool(1, false);
+    }
+  });
+  els.btnExport.addEventListener('click', exportReport);
+  if (els.exportModalCancel) {
+    els.exportModalCancel.addEventListener('click', closeExportModal);
+  }
+  if (els.exportModalOk) {
+    els.exportModalOk.addEventListener('click', async () => {
+      const checked = els.exportModal?.querySelector('input[name="export-scope"]:checked');
+      const scope = checked?.value || 'both';
+      closeExportModal();
+      els.btnExport.disabled = true;
+      try {
+        await exportPoolReport(scope);
+      } finally {
+        els.btnExport.disabled = false;
+      }
+    });
+  }
+  if (els.exportModal) {
+    els.exportModal.addEventListener('click', (e) => {
+      if (e.target === els.exportModal) closeExportModal();
+    });
+  }
+  els.dateSelect.addEventListener('change', () => setDateByYmd(els.dateSelect.value, true));
+  els.datePicker.addEventListener('change', () => setDateByYmd(toYmd(els.datePicker.value), true));
+  els.stockDetailBack.addEventListener('click', closeStockDetail);
+  els.stockDetailPrev.addEventListener('click', () => navigateStock(-1));
+  els.stockDetailNext.addEventListener('click', () => navigateStock(1));
+  els.stockDetailSelect.addEventListener('change', () => {
+    const idx = parseInt(els.stockDetailSelect.value, 10);
+    if (!isNaN(idx)) {
+      const s = state.stockNavList[idx];
+      if (s) openStockDetail(s.code, s.name);
+    }
+  });
+  // stock-detail 内 ↗：TV 新窗口 / 资料新窗口
+  els.stockDetailExt.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const code = currentDetailCode();
+    if (!code) return;
+    window.open(isTvOn() ? stockTvUrl(code) : stockPageUrl(code), '_blank', 'noopener');
+  });
+  if (els.tvToggle) {
+    els.tvToggle.addEventListener('change', saveTvSetting);
+  }
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      if (els.exportModal?.classList.contains('open')) closeExportModal();
+      else if (els.stockDetail.classList.contains('open')) closeStockDetail();
+      else closeSettings();
+      return;
+    }
+    if (!els.stockDetail.classList.contains('open')) return;
+    if (e.key === 'ArrowLeft') { e.preventDefault(); navigateStock(-1); }
+    if (e.key === 'ArrowRight') { e.preventDefault(); navigateStock(1); }
+  });
+
+  function savePrompt() {
+    try { localStorage.setItem('limit_up_prompt', els.promptText.value); } catch (_) {}
+  }
+  els.promptText.addEventListener('change', savePrompt);
+  els.promptText.addEventListener('blur', savePrompt);
+  $('btn-prompt-reset').addEventListener('click', () => {
+    els.promptText.value = DEFAULT_PROMPT;
+    savePrompt();
+  });
+
+  function copyCurrentCodes() {
+    const codes = (state.stockNavList || []).map((s) => s.code).filter(Boolean);
+    if (!codes.length) {
+      showToast('当前列表无代码可复制', 'err');
+      return;
+    }
+    const text = codes.join('\n');
+    const done = () => showToast(`已复制 ${codes.length} 只代码`, 'ok');
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(() => {
+        // fallback
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); done(); } catch (_) { showToast('复制失败', 'err'); }
+        ta.remove();
+      });
+    } else {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); done(); } catch (_) { showToast('复制失败', 'err'); }
+      ta.remove();
+    }
+  }
+
+  if (els.thsScale) {
+    els.thsScale.addEventListener('change', saveThsScale);
+  }
+  if (els.thsPageVer) {
+    els.thsPageVer.addEventListener('change', saveThsPageVer);
+  }
+  if (els.darkToggle) {
+    els.darkToggle.addEventListener('change', saveDarkMode);
+  }
+  if (els.eventToggle) {
+    els.eventToggle.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleEventCard();
+    });
+  }
+  if (els.btnCopyCodes) {
+    els.btnCopyCodes.addEventListener('click', (e) => {
+      e.stopPropagation();
+      copyCurrentCodes();
+    });
+  }
+  if (els.btnDetailRetry) {
+    els.btnDetailRetry.addEventListener('click', () => {
+      const code = currentDetailCode();
+      if (!code) return;
+      const key = frameCacheKey(code, 'ths');
+      const entry = frameCache.map.get(key);
+      if (entry) {
+        entry.loaded = false;
+        entry.iframe.src = 'about:blank';
+        setTimeout(() => {
+          openStockDetail(code, state.stockNavList[state.stockNavIndex]?.name || '');
+        }, 30);
+      } else {
+        openStockDetail(code, state.stockNavList[state.stockNavIndex]?.name || '');
+      }
+    });
+  }
+
+  // ---------- boot ----------
+  loadProxy();
+  loadTvSetting();
+  loadThsScale();
+  loadThsPageVer();
+  loadDarkMode();
+  loadEventCollapsed();
+  try {
+    const saved = localStorage.getItem('limit_up_prompt');
+    els.promptText.value = saved || DEFAULT_PROMPT;
+  } catch (_) {
+    els.promptText.value = DEFAULT_PROMPT;
+  }
+  (async () => {
+    await initDates();
+    await loadBlocks();
+  })();
+})();
+</script>
+</body>
+</html>
