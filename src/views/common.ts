@@ -56,7 +56,7 @@ export function renderRail(): string {
         ${icon(state.theme === "dark" ? "sun" : "moon", 18)}
       </button>
       <button class="rail-tool" data-action="settings" title="设置" aria-label="设置">${icon("settings", 18)}</button>
-      <span class="rail-version">v1.2.1</span>
+      <span class="rail-version">v1.2.2</span>
     </div>
   </aside>`;
 }
@@ -128,7 +128,7 @@ export function renderIndices(): string {
     ? state.indices
         .slice(0, 3)
         .map(
-          (q) => `<button class="index" data-index-secid="${esc(q.code)}" data-index-name="${esc(q.name)}" title="查看 ${esc(q.name)} K线">
+          (q) => `<button class="index ${q.stale ? "is-stale" : ""}" data-index-secid="${esc(q.code)}" data-index-name="${esc(q.name)}" title="查看 ${esc(q.name)} K线 · ${q.stale ? "缓存" : "实时"} ${esc(q.asOf || "")}">
             <div class="index-copy">
               <span class="index-name">${esc(shortIndexName(q.name))}</span>
               <span class="index-value">${q.price.toFixed(2)}<span class="index-pct ${q.pct > 0 ? "text-up" : q.pct < 0 ? "text-down" : "text-flat"}">${fmtPct(q.pct)}</span></span>

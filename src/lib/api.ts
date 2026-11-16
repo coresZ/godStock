@@ -5,6 +5,7 @@ import type {
   DayPayload,
   IndexQuote,
   KlinePayload,
+  StockQuote,
   Period,
   SearchItem,
   Settings,
@@ -44,6 +45,9 @@ export const api = {
   getIndexKline: (secid: string, name: string, period: Period, refresh = false) =>
     call<KlinePayload>("get_index_kline", { secid, name, period, refresh }),
   getIndices: (refresh = false) => call<IndexQuote[]>("get_indices", { refresh }),
+  getStockQuote: (code: string) => call<StockQuote>("get_stock_quote", { code }),
+  getStockQuotes: (codes: string[]) => call<StockQuote[]>("get_stock_quotes", { codes }),
+  getIndexQuote: (secid: string) => call<StockQuote>("get_index_quote", { secid }),
   searchStocks: (query: string) => call<SearchItem[]>("search_stocks", { query }),
   recentStocks: () => call<SearchItem[]>("recent_stocks"),
   getSettings: () => call<Settings>("get_settings"),

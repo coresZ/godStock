@@ -776,6 +776,19 @@ pub fn load_klines(conn: &Connection, code: &str, period: &str) -> Result<(Vec<K
     Ok((out, meta.as_ref().map(|m| m.0.clone()), meta.map(|m| m.1).unwrap_or(0)))
 }
 
+pub fn upsert_index_point(conn: &Connection, code: &str, date: &str, close: f64, pct: f64) -> Result<()> {
+    if date.trim().is_empty() || close <= 0.0 {
+        return Ok(());
+    }
+    conn.execute(
+        "INSERT INTO index_daily(code,date,close,pct) VALUES (?1,?2,?3,?4)
+         ON CONFLICT(code,date) DO UPDATE SET close=excluded.close,pct=excluded.pct",
+        params![code, date, close, pct],
+    )?;
+    Ok(())
+}
+
+#[allow(dead_code)]
 pub fn save_index_series(conn: &mut Connection, code: &str, series: &[(String, f64, f64)]) -> Result<()> {
     let tx = conn.transaction()?;
     tx.execute("DELETE FROM index_daily WHERE code=?1", params![code])?;

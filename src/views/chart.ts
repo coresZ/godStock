@@ -1,6 +1,6 @@
 import { esc, fmtAmount, fmtClock, fmtMoney, fmtPct, fmtPrice, fmtShortDate, icon, tierName, tone } from "../lib/ui";
 import { filterStocks, findStock, state } from "../lib/state";
-import type { ChartPrefs, KlineCandle, Period, WatchStock } from "../lib/types";
+import type { ChartPrefs, KlineCandle, Period, StockQuote, WatchStock } from "../lib/types";
 
 const PRIMARY_PERIODS: Array<{ value: Period; label: string }> = [
   { value: "1m", label: "1分" },
@@ -195,6 +195,19 @@ export function chartSwitchContext(): { list: Array<{ code: string; name: string
   return { list, index: list.findIndex((s) => s.code === current.code) };
 }
 
+function currentStockQuote(stock: NonNullable<typeof state.chartStock>): StockQuote | null {
+  const quote = state.chartQuote;
+  if (!quote) return null;
+  const code = stock.kind === "index" ? (stock.secid || stock.code).split(".").pop() : stock.code;
+  return quote.code === code ? quote : null;
+}
+
+function quoteDateLabel(asOf: string): string {
+  const [day, time] = asOf.split(" ");
+  if (!day || !time) return asOf;
+  return `${day.slice(5, 7)}.${day.slice(8, 10)} ${time.slice(0, 5)}`;
+}
+
 export function renderChartHead(): string {
   const stock = state.chartStock;
   if (!stock) return "";
@@ -203,14 +216,16 @@ export function renderChartHead(): string {
   const intraday = intradaySnapshot(candles, data?.prevClose);
   const st = stats(candles);
   const last = st?.last;
+  const live = currentStockQuote(stock);
   const name = data?.name || stock.name || stock.code;
   const code = stock.kind === "index" ? stock.secid || stock.code : data?.code || stock.code;
-  const pct = intraday?.pct ?? last?.pct ?? 0;
-  const change = intraday?.change ?? (last && st ? last.close - st.prev.close : 0);
-  const dayHigh = intraday?.high ?? last?.high ?? 0;
-  const dayLow = intraday?.low ?? last?.low ?? 0;
-  const dayAmount = intraday?.amount ?? last?.amount ?? 0;
-  const dayTurnover = intraday?.turnover ?? last?.turnover ?? 0;
+  const price = live?.price ?? last?.close ?? 0;
+  const pct = live?.pct ?? intraday?.pct ?? last?.pct ?? 0;
+  const change = live?.change ?? intraday?.change ?? (last && st ? last.close - st.prev.close : 0);
+  const dayHigh = live?.high || intraday?.high || last?.high || 0;
+  const dayLow = live?.low || intraday?.low || last?.low || 0;
+  const dayAmount = live?.amount || intraday?.amount || last?.amount || 0;
+  const dayTurnover = live?.turnover || intraday?.turnover || last?.turnover || 0;
   let dateLabel = "—";
   if (data?.latestDate) {
     if (data.latestDate.includes(" ")) {
@@ -220,10 +235,11 @@ export function renderChartHead(): string {
       dateLabel = fmtShortDate(data.latestDate.replace(/-/g, ""));
     }
   }
+  if (live?.asOf) dateLabel = quoteDateLabel(live.asOf);
 
-  const quote = last
+  const quote = price > 0
     ? `<div class="chart-quote">
-        <span class="chart-price">${fmtPrice(last.close)}</span>
+        <span class="chart-price">${fmtPrice(price)}</span>
         <span class="chart-change">
           <b class="text-${tone(pct)}">${fmtPct(pct)}</b>
           <em class="text-${tone(change)}">${change >= 0 ? "+" : ""}${change.toFixed(2)}</em>
@@ -231,7 +247,7 @@ export function renderChartHead(): string {
       </div>`
     : `<div class="chart-quote"><span class="chart-price" style="color:var(--faint)">—</span></div>`;
 
-  const snapshots = last
+  const snapshots = price > 0
     ? `<div class="chart-snapshot">
         <div class="snapshot-item"><span class="snapshot-label">最高</span><span class="snapshot-value">${fmtPrice(dayHigh)}</span></div>
         <div class="snapshot-item"><span class="snapshot-label">最低</span><span class="snapshot-value">${fmtPrice(dayLow)}</span></div>
@@ -251,7 +267,7 @@ export function renderChartHead(): string {
         <span>${state.chartMode === "timeshare" ? "分时" : PERIOD_LABEL[state.chartPeriod]}</span><span class="meta-dot"></span>
         <span>${stock.kind === "index" ? "指数" : state.chartMode === "timeshare" ? "日内均价" : "前复权"}</span><span class="meta-dot"></span>
         <span>截至 ${dateLabel}</span>
-        ${data?.source === "cache" ? `<span class="meta-dot"></span><span class="cache-tag">本地缓存</span>` : ""}
+        ${live ? `<span class="meta-dot"></span><span class="live-tag">${live.stale ? "缓存" : "实时"}</span>` : data?.source === "cache" ? `<span class="meta-dot"></span><span class="cache-tag">本地缓存</span>` : ""}
       </div>
     </div>
     ${quote}
@@ -399,6 +415,8 @@ export function renderChartInsight(): string {
 }
 
 function watchQuote(code: string): { text: string; cls: string } | null {
+  const live = state.watchQuotes[code];
+  if (live) return { text: fmtPct(live.pct), cls: `text-${tone(live.pct)}` };
   const up = findStock(code);
   if (up) return { text: fmtPct(up.changeRate), cls: `text-${tone(up.changeRate)}` };
   const open = state.day?.openLimit.find((s) => s.code === code);

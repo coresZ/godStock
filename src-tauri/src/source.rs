@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
+use chrono::{Local, TimeZone};
+use encoding_rs::GBK;
 use reqwest::Client;
 use serde_json::Value;
 
@@ -11,6 +13,8 @@ use crate::models::*;
 const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 const THS_REFERER: &str = "https://data.10jqka.com.cn/";
 const EM_REFERER: &str = "https://quote.eastmoney.com/";
+const TX_REFERER: &str = "https://gu.qq.com/";
+const SINA_REFERER: &str = "https://finance.sina.com.cn/";
 
 pub fn client() -> Result<Client> {
     Client::builder()
@@ -20,6 +24,68 @@ pub fn client() -> Result<Client> {
         .gzip(true)
         .build()
         .context("build http client")
+}
+
+async fn get_bytes(client: &Client, url: &str, referer: &str) -> Result<Vec<u8>> {
+    let res = client
+        .get(url)
+        .header(reqwest::header::REFERER, referer)
+        .header(reqwest::header::ACCEPT, "*/*")
+        .send()
+        .await
+        .with_context(|| format!("request {url}"))?;
+    let status = res.status();
+    let bytes = res.bytes().await.context("read response")?;
+    if !status.is_success() {
+        return Err(anyhow!("HTTP {} · {}", status.as_u16(), url));
+    }
+    Ok(bytes.to_vec())
+}
+
+fn gbk_text(bytes: &[u8]) -> String {
+    let (text, _, _) = GBK.decode(bytes);
+    text.into_owned()
+}
+
+fn tencent_symbol(secid: &str) -> String {
+    let code = secid.split('.').nth(1).unwrap_or(secid);
+    if secid.starts_with('1') {
+        format!("sh{code}")
+    } else {
+        format!("sz{code}")
+    }
+}
+
+fn stock_symbol(code: &str) -> String {
+    if code.starts_with('6') || code.starts_with('9') {
+        format!("sh{code}")
+    } else {
+        format!("sz{code}")
+    }
+}
+
+fn secid_from_symbol(symbol: &str) -> String {
+    if let Some(code) = symbol.strip_prefix("sh") {
+        format!("1.{code}")
+    } else if let Some(code) = symbol.strip_prefix("sz") {
+        format!("0.{code}")
+    } else {
+        symbol.to_string()
+    }
+}
+
+fn tx_time(raw: &str) -> String {
+    if raw.len() != 14 || !raw.chars().all(|c| c.is_ascii_digit()) {
+        return Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    }
+    let parse = |a: usize, b: usize| raw[a..b].parse::<i32>().unwrap_or(0);
+    let (year, month, day) = (parse(0, 4), parse(4, 6), parse(6, 8));
+    let (hour, minute, second) = (parse(8, 10), parse(10, 12), parse(12, 14));
+    Local
+        .with_ymd_and_hms(year, month as u32, day as u32, hour as u32, minute as u32, second as u32)
+        .single()
+        .map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string())
+        .unwrap_or_else(|| Local::now().format("%Y-%m-%d %H:%M:%S").to_string())
 }
 
 async fn get_json(client: &Client, url: &str, referer: &str) -> Result<Value> {
@@ -516,10 +582,15 @@ fn parse_kline_json(data: &Value) -> Result<(String, Vec<KlineCandle>)> {
 }
 
 pub async fn fetch_prev_close_for_stock(client: &Client, code: &str) -> Option<f64> {
+    if let Ok(quote) = fetch_stock_quote(client, code).await {
+        if quote.prev_close > 0.0 {
+            return Some(quote.prev_close);
+        }
+    }
     fetch_prev_close(client, &secid(code)).await
 }
 
-pub async fn fetch_kline(client: &Client, code: &str, period: &str) -> Result<(String, Vec<KlineCandle>)> {
+async fn fetch_eastmoney_kline(client: &Client, code: &str, period: &str) -> Result<(String, Vec<KlineCandle>)> {
     let sid = secid(code);
     let klt = period_klt(period);
     let lmt = kline_limit(period);
@@ -530,7 +601,145 @@ pub async fn fetch_kline(client: &Client, code: &str, period: &str) -> Result<(S
     parse_kline_json(&json["data"])
 }
 
+fn parse_tencent_kline(json: &Value, symbol: &str, period: &str) -> Result<(String, Vec<KlineCandle>)> {
+    let data = &json["data"][symbol];
+    let key = format!("qfq{period}");
+    let rows = data[&key]
+        .as_array()
+        .or_else(|| data[period].as_array())
+        .ok_or_else(|| anyhow!("腾讯K线为空"))?;
+    let mut out = Vec::new();
+    let mut prev = 0.0;
+    for row in rows {
+        let Some(arr) = row.as_array() else { continue };
+        if arr.len() < 6 {
+            continue;
+        }
+        let date = string(&arr[0]);
+        let open = num(&arr[1]);
+        let close = num(&arr[2]);
+        let high = num(&arr[3]);
+        let low = num(&arr[4]);
+        let volume = num(&arr[5]);
+        if date.is_empty() || close <= 0.0 {
+            continue;
+        }
+        let base = if prev > 0.0 { prev } else { open };
+        let pct = if base > 0.0 { (close / base - 1.0) * 100.0 } else { 0.0 };
+        out.push(KlineCandle {
+            date: date.clone(),
+            open,
+            high,
+            low,
+            close,
+            volume,
+            amount: 0.0,
+            pct,
+            turnover: 0.0,
+        });
+        prev = close;
+    }
+    if out.is_empty() {
+        Err(anyhow!("腾讯K线为空"))
+    } else {
+        let name = string(&data["qt"][symbol][1]);
+        Ok((name, out))
+    }
+}
+
+async fn fetch_tencent_kline(client: &Client, code: &str, period: &str) -> Result<(String, Vec<KlineCandle>)> {
+    let symbol = stock_symbol(code);
+    let tx_period = match period {
+        "week" => "week",
+        "month" => "month",
+        _ => "day",
+    };
+    let url = format!(
+        "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={symbol},{tx_period},,,{},qfq",
+        kline_limit(period)
+    );
+    let json = get_json(client, &url, TX_REFERER).await?;
+    parse_tencent_kline(&json, &symbol, tx_period)
+}
+
+async fn fetch_tencent_minute_kline(client: &Client, symbol: &str) -> Result<(String, Vec<KlineCandle>)> {
+    let url = format!("https://web.ifzq.gtimg.cn/appstock/app/minute/query?code={symbol}");
+    let json = get_json(client, &url, TX_REFERER).await?;
+    let node = &json["data"][symbol]["data"];
+    let raw_date = string(&node["date"]);
+    let date = if raw_date.len() == 8 {
+        format!("{}-{}-{}", &raw_date[0..4], &raw_date[4..6], &raw_date[6..8])
+    } else {
+        raw_date
+    };
+    let Some(lines) = node["data"].as_array() else {
+        return Err(anyhow!("腾讯分时为空"));
+    };
+    let mut out = Vec::new();
+    let mut prev_volume = 0.0;
+    let mut prev_amount = 0.0;
+    let mut prev_price = 0.0;
+    for line in lines {
+        let Some(text) = line.as_str() else { continue };
+        let parts: Vec<&str> = text.split_whitespace().collect();
+        if parts.len() < 4 {
+            continue;
+        }
+        let Some(hhmm) = parts.first() else { continue };
+        let price = parts[1].parse::<f64>().unwrap_or(0.0);
+        let volume = parts[2].parse::<f64>().unwrap_or(0.0);
+        let amount = parts[3].parse::<f64>().unwrap_or(0.0);
+        if price <= 0.0 || hhmm.len() != 4 || date.is_empty() {
+            continue;
+        }
+        let clock = hhmm.parse::<i32>().unwrap_or(0);
+        if !((930..=1130).contains(&clock) || (1300..=1500).contains(&clock)) {
+            continue;
+        }
+        let time = format!("{date} {}:{}", &hhmm[0..2], &hhmm[2..4]);
+        let base = if prev_price > 0.0 { prev_price } else { price };
+        out.push(KlineCandle {
+            date: time,
+            open: price,
+            high: price,
+            low: price,
+            close: price,
+            volume: (volume - prev_volume).max(0.0),
+            amount: (amount - prev_amount).max(0.0),
+            pct: if base > 0.0 { (price / base - 1.0) * 100.0 } else { 0.0 },
+            turnover: 0.0,
+        });
+        prev_volume = volume;
+        prev_amount = amount;
+        prev_price = price;
+    }
+    if out.is_empty() {
+        Err(anyhow!("腾讯分时为空"))
+    } else {
+        Ok((String::new(), out))
+    }
+}
+
+pub async fn fetch_kline(client: &Client, code: &str, period: &str) -> Result<(String, Vec<KlineCandle>)> {
+    match fetch_eastmoney_kline(client, code, period).await {
+        Ok(data) => Ok(data),
+        Err(primary) => {
+            let fallback = match period {
+                "1m" => fetch_tencent_minute_kline(client, &stock_symbol(code)).await,
+                "day" | "week" | "month" => fetch_tencent_kline(client, code, period).await,
+                _ => Err(anyhow!("该周期没有备用K线源")),
+            };
+            fallback.map_err(|e| anyhow!("{primary:#} · 备用源: {e:#}"))
+        }
+    }
+}
+
 pub async fn fetch_prev_close(client: &Client, sid: &str) -> Option<f64> {
+    if let Ok(quote) = fetch_index_quote(client, sid).await {
+        if quote.prev_close > 0.0 {
+            return Some(quote.prev_close);
+        }
+    }
     let url = format!(
         "https://push2.eastmoney.com/api/qt/stock/get?fltt=2&secid={sid}&fields=f57,f58,f43,f60"
     );
@@ -539,7 +748,7 @@ pub async fn fetch_prev_close(client: &Client, sid: &str) -> Option<f64> {
     if value > 0.0 { Some(value) } else { None }
 }
 
-pub async fn fetch_index_kline(client: &Client, sid: &str, period: &str) -> Result<(String, Vec<KlineCandle>)> {
+async fn fetch_eastmoney_index_kline(client: &Client, sid: &str, period: &str) -> Result<(String, Vec<KlineCandle>)> {
     let klt = period_klt(period);
     let lmt = kline_limit(period);
     let url = format!(
@@ -549,72 +758,334 @@ pub async fn fetch_index_kline(client: &Client, sid: &str, period: &str) -> Resu
     parse_kline_json(&json["data"])
 }
 
-pub async fn fetch_indices(client: &Client) -> Vec<(String, Vec<(String, f64, f64)>)> {
-    let list = [
-        ("1.000001", "上证指数"),
-        ("0.399001", "深证成指"),
-        ("0.399006", "创业板指"),
-    ];
-    let quote_url = "https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&secids=1.000001,0.399001,0.399006&fields=f2,f3,f4,f12,f14";
-    let mut quote_pct: HashMap<String, f64> = HashMap::new();
-    if let Ok(quote) = get_json(client, quote_url, EM_REFERER).await {
-        if let Some(items) = quote["data"]["diff"].as_array() {
-            for item in items {
-                let code = string(&item["f12"]);
-                let pct = num(&item["f3"]);
-                if !code.is_empty() {
-                    quote_pct.insert(code, pct);
-                }
-            }
+async fn fetch_tencent_index_kline(client: &Client, sid: &str, period: &str) -> Result<(String, Vec<KlineCandle>)> {
+    let symbol = tencent_symbol(sid);
+    let tx_period = match period {
+        "week" => "week",
+        "month" => "month",
+        _ => "day",
+    };
+    let url = format!(
+        "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={symbol},{tx_period},,,{},qfq",
+        kline_limit(period)
+    );
+    let json = get_json(client, &url, TX_REFERER).await?;
+    parse_tencent_kline(&json, &symbol, tx_period)
+}
+
+pub async fn fetch_index_kline(client: &Client, sid: &str, period: &str) -> Result<(String, Vec<KlineCandle>)> {
+    match fetch_eastmoney_index_kline(client, sid, period).await {
+        Ok(data) => Ok(data),
+        Err(primary) => {
+            let fallback = match period {
+                "1m" => fetch_tencent_minute_kline(client, &tencent_symbol(sid)).await,
+                "day" | "week" | "month" => fetch_tencent_index_kline(client, sid, period).await,
+                _ => Err(anyhow!("该周期没有备用K线源")),
+            };
+            fallback.map_err(|e| anyhow!("{primary:#} · 备用源: {e:#}"))
         }
     }
-    let mut out = Vec::new();
-    for (sid, name) in list {
-        let url = format!(
-            "https://push2his.eastmoney.com/api/qt/stock/kline/get?secid={sid}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt=1&fqt=1&end=20500101&lmt=260"
-        );
-        let result = get_json(client, &url, EM_REFERER).await;
-        let Ok(json) = result else { continue };
-        let mut raw: Vec<(String, f64, f64)> = Vec::new();
-        if let Some(lines) = json["data"]["klines"].as_array() {
-            for line in lines {
-                let Some(text) = line.as_str() else { continue };
-                let parts: Vec<&str> = text.split(',').collect();
-                if parts.len() < 3 {
-                    continue;
-                }
-                let open = parts[1].parse::<f64>().unwrap_or(0.0);
-                let close = parts[2].parse::<f64>().unwrap_or(0.0);
-                if open > 0.0 && close > 0.0 {
-                    raw.push((parts[0].to_string(), open, close));
-                }
-            }
-        }
-        let Some(last_day) = raw.last().map(|r| r.0.chars().take(10).collect::<String>()) else {
+}
+
+fn parse_tencent_line(symbol: &str, body: &str) -> Option<StockQuote> {
+    let fields: Vec<&str> = body.split('~').collect();
+    if fields.len() < 8 {
+        return None;
+    }
+    let price = fields.get(3)?.parse::<f64>().ok()?;
+    let prev_close = fields.get(4)?.parse::<f64>().ok().unwrap_or(0.0);
+    if price <= 0.0 {
+        return None;
+    }
+    let time = fields
+        .iter()
+        .position(|field| field.len() == 14 && field.chars().all(|c| c.is_ascii_digit()))
+        .unwrap_or(0);
+    let pick = |offset: usize| -> f64 {
+        fields
+            .get(time + offset)
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(0.0)
+    };
+    let change = pick(1);
+    let pct = pick(2);
+    let high = pick(3);
+    let low = pick(4);
+    let amount = fields
+        .get(time + 5)
+        .and_then(|v| v.split('/').nth(2))
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(0.0);
+    Some(StockQuote {
+        code: fields.get(2).unwrap_or(&"").to_string(),
+        symbol: symbol.to_string(),
+        name: fields.get(1).unwrap_or(&"").trim().to_string(),
+        price,
+        prev_close,
+        open: fields.get(5).unwrap_or(&"0").parse::<f64>().unwrap_or(0.0),
+        high,
+        low,
+        change,
+        pct,
+        volume: fields.get(6).unwrap_or(&"0").parse::<f64>().unwrap_or(0.0),
+        amount,
+        turnover: 0.0,
+        as_of: tx_time(fields.get(time).unwrap_or(&"")),
+        source: "tencent".into(),
+        stale: false,
+    })
+}
+
+async fn fetch_tencent_quotes(client: &Client, symbols: &[String]) -> Result<Vec<StockQuote>> {
+    let url = format!("https://qt.gtimg.cn/q={}", symbols.join(","));
+    let bytes = get_bytes(client, &url, TX_REFERER).await?;
+    let text = gbk_text(&bytes);
+    let mut found: HashMap<String, StockQuote> = HashMap::new();
+    for line in text.lines() {
+        let Some((key, value)) = line.split_once('=') else {
             continue;
         };
-        let day_rows: Vec<&(String, f64, f64)> = raw.iter().filter(|r| r.0.starts_with(&last_day)).collect();
-        let Some(first) = day_rows.first() else { continue };
-        let base = first.1;
-        let mut rows: Vec<(String, f64, f64)> = day_rows
-            .iter()
-            .map(|r| {
-                let pct = if base > 0.0 { (r.2 / base - 1.0) * 100.0 } else { 0.0 };
-                (r.0.clone(), r.2, pct)
-            })
-            .collect();
-        // 1 分钟接口只能推算当日涨跌幅；用指数快照接口补回精确涨幅。
-        if let Some(pct) = quote_pct.get(sid.split('.').nth(1).unwrap_or("")) {
-            if let Some(last) = rows.last_mut() {
-                last.2 = *pct;
-            }
-        }
-        if !rows.is_empty() {
-            let _ = name;
-            out.push((sid.to_string(), rows));
+        let Some(symbol) = key.trim().strip_prefix("v_") else {
+            continue;
+        };
+        let body = value.trim().trim_end_matches(';').trim_matches('"');
+        if let Some(quote) = parse_tencent_line(symbol, body) {
+            found.insert(quote.symbol.clone(), quote);
         }
     }
-    out
+    let out: Vec<StockQuote> = symbols.iter().filter_map(|s| found.remove(s)).collect();
+    if out.is_empty() {
+        Err(anyhow!("腾讯行情没有返回有效数据"))
+    } else {
+        Ok(out)
+    }
+}
+
+async fn fetch_sina_quotes(client: &Client, symbols: &[String]) -> Result<Vec<StockQuote>> {
+    let url = format!("https://hq.sinajs.cn/list={}", symbols.join(","));
+    let bytes = get_bytes(client, &url, SINA_REFERER).await?;
+    let text = gbk_text(&bytes);
+    let mut found: HashMap<String, StockQuote> = HashMap::new();
+    for line in text.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let Some(symbol) = key.trim().strip_prefix("var hq_str_") else {
+            continue;
+        };
+        let body = value.trim().trim_end_matches(';').trim_matches('"');
+        let fields: Vec<&str> = body.split(',').collect();
+        if fields.len() < 32 {
+            continue;
+        }
+        let price = fields[3].parse::<f64>().unwrap_or(0.0);
+        let prev_close = fields[2].parse::<f64>().unwrap_or(0.0);
+        if price <= 0.0 {
+            continue;
+        }
+        let change = price - prev_close;
+        let pct = if prev_close > 0.0 { change / prev_close * 100.0 } else { 0.0 };
+        found.insert(
+            symbol.to_string(),
+            StockQuote {
+                code: symbol.chars().skip(2).collect(),
+                symbol: symbol.to_string(),
+                name: fields[0].to_string(),
+                price,
+                prev_close,
+                open: fields[1].parse::<f64>().unwrap_or(0.0),
+                high: fields[4].parse::<f64>().unwrap_or(0.0),
+                low: fields[5].parse::<f64>().unwrap_or(0.0),
+                change,
+                pct,
+                volume: fields[8].parse::<f64>().unwrap_or(0.0),
+                amount: fields[9].parse::<f64>().unwrap_or(0.0),
+                turnover: 0.0,
+                as_of: format!("{} {}", fields[30], fields[31]),
+                source: "sina".into(),
+                stale: false,
+            },
+        );
+    }
+    let out: Vec<StockQuote> = symbols.iter().filter_map(|s| found.remove(s)).collect();
+    if out.is_empty() {
+        Err(anyhow!("新浪行情没有返回有效数据"))
+    } else {
+        Ok(out)
+    }
+}
+
+async fn fetch_eastmoney_quotes(client: &Client, symbols: &[String]) -> Result<Vec<StockQuote>> {
+    let secids: Vec<String> = symbols.iter().map(|s| secid_from_symbol(s)).collect();
+    let url = format!(
+        "https://push2.eastmoney.com/api/qt/ulist.np/get?ut=7eea3edcaed734bea9cbfc24409ed989&fltt=2&secids={}&fields=f2,f3,f4,f12,f14",
+        secids.join(",")
+    );
+    let json = get_json(client, &url, EM_REFERER).await?;
+    let mut items = HashMap::new();
+    if let Some(arr) = json["data"]["diff"].as_array() {
+        for item in arr {
+            items.insert(string(&item["f12"]), item.clone());
+        }
+    }
+    let as_of = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let mut out = Vec::new();
+    for symbol in symbols {
+        let code = symbol.chars().skip(2).collect::<String>();
+        let Some(item) = items.get(&code) else { continue };
+        let price = num(&item["f2"]);
+        let pct = num(&item["f3"]);
+        let change = num(&item["f4"]);
+        if price <= 0.0 {
+            continue;
+        }
+        out.push(StockQuote {
+            code,
+            symbol: symbol.clone(),
+            name: string(&item["f14"]),
+            price,
+            prev_close: price - change,
+            open: 0.0,
+            high: 0.0,
+            low: 0.0,
+            change,
+            pct,
+            volume: 0.0,
+            amount: 0.0,
+            turnover: 0.0,
+            as_of: as_of.clone(),
+            source: "eastmoney".into(),
+            stale: false,
+        });
+    }
+    if out.is_empty() {
+        Err(anyhow!("东方财富行情没有返回有效数据"))
+    } else {
+        Ok(out)
+    }
+}
+
+async fn fetch_quote_list(client: &Client, symbols: &[String]) -> Result<Vec<StockQuote>> {
+    if let Ok(quotes) = fetch_tencent_quotes(client, symbols).await {
+        return Ok(quotes);
+    }
+    if let Ok(quotes) = fetch_sina_quotes(client, symbols).await {
+        return Ok(quotes);
+    }
+    fetch_eastmoney_quotes(client, symbols).await
+}
+
+async fn fetch_tencent_spark(client: &Client, symbol: &str) -> Result<Vec<f64>> {
+    let url = format!("https://web.ifzq.gtimg.cn/appstock/app/minute/query?code={symbol}");
+    let json = get_json(client, &url, TX_REFERER).await?;
+    let Some(lines) = json["data"][symbol]["data"]["data"].as_array() else {
+        return Err(anyhow!("分钟行情为空"));
+    };
+    let mut out = Vec::new();
+    for line in lines {
+        let Some(text) = line.as_str() else { continue };
+        let parts: Vec<&str> = text.split_whitespace().collect();
+        if let Some(price) = parts.get(1).and_then(|v| v.parse::<f64>().ok()) {
+            if price > 0.0 {
+                out.push(price);
+            }
+        }
+    }
+    if out.is_empty() {
+        Err(anyhow!("分钟行情为空"))
+    } else {
+        Ok(out)
+    }
+}
+
+async fn fetch_eastmoney_spark(client: &Client, secid: &str) -> Result<Vec<f64>> {
+    let url = format!(
+        "https://push2his.eastmoney.com/api/qt/stock/kline/get?secid={secid}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt=1&fqt=1&end=20500101&lmt=260"
+    );
+    let json = get_json(client, &url, EM_REFERER).await?;
+    let Some(lines) = json["data"]["klines"].as_array() else {
+        return Err(anyhow!("东方财富分钟行情为空"));
+    };
+    let mut raw: Vec<(String, f64)> = Vec::new();
+    for line in lines {
+        let Some(text) = line.as_str() else { continue };
+        let parts: Vec<&str> = text.split(',').collect();
+        if parts.len() < 3 {
+            continue;
+        }
+        let close = parts[2].parse::<f64>().unwrap_or(0.0);
+        if close > 0.0 {
+            raw.push((parts[0].to_string(), close));
+        }
+    }
+    let Some(last_day) = raw.last().map(|r| r.0.chars().take(10).collect::<String>()) else {
+        return Err(anyhow!("东方财富分钟行情为空"));
+    };
+    let out: Vec<f64> = raw
+        .iter()
+        .filter(|r| r.0.starts_with(&last_day))
+        .map(|r| r.1)
+        .collect();
+    if out.is_empty() {
+        Err(anyhow!("东方财富分钟行情为空"))
+    } else {
+        Ok(out)
+    }
+}
+
+pub async fn fetch_indices(client: &Client) -> Result<Vec<IndexQuote>> {
+    let symbols = ["sh000001".to_string(), "sz399001".to_string(), "sz399006".to_string()];
+    let quotes = fetch_quote_list(client, &symbols).await?;
+    let mut out = Vec::new();
+    for quote in quotes {
+        let secid = secid_from_symbol(&quote.symbol);
+        let spark = match fetch_tencent_spark(client, &quote.symbol).await {
+            Ok(spark) => spark,
+            Err(_) => fetch_eastmoney_spark(client, &secid).await.unwrap_or_default(),
+        };
+        let name = if quote.name.is_empty() {
+            match secid.as_str() {
+                "1.000001" => "上证指数",
+                "0.399001" => "深证成指",
+                "0.399006" => "创业板指",
+                _ => &quote.name,
+            }
+            .to_string()
+        } else {
+            quote.name.clone()
+        };
+        out.push(IndexQuote {
+            code: secid,
+            name,
+            price: quote.price,
+            change: quote.change,
+            pct: quote.pct,
+            spark,
+            source: quote.source,
+            as_of: quote.as_of,
+            stale: false,
+        });
+    }
+    if out.is_empty() {
+        Err(anyhow!("指数行情为空"))
+    } else {
+        Ok(out)
+    }
+}
+
+pub async fn fetch_stock_quote(client: &Client, code: &str) -> Result<StockQuote> {
+    let symbol = stock_symbol(code);
+    fetch_quote_list(client, &[symbol]).await?.into_iter().next().ok_or_else(|| anyhow!("个股行情为空"))
+}
+
+pub async fn fetch_stock_quotes(client: &Client, codes: &[String]) -> Result<Vec<StockQuote>> {
+    let symbols: Vec<String> = codes.iter().map(|code| stock_symbol(code)).collect();
+    fetch_quote_list(client, &symbols).await
+}
+
+pub async fn fetch_index_quote(client: &Client, secid: &str) -> Result<StockQuote> {
+    let symbol = tencent_symbol(secid);
+    fetch_quote_list(client, &[symbol]).await?.into_iter().next().ok_or_else(|| anyhow!("指数行情为空"))
 }
 
 pub async fn search(client: &Client, q: &str) -> Result<Vec<SearchItem>> {

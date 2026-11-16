@@ -109,6 +109,28 @@ export interface IndexQuote {
   change: number;
   pct: number;
   spark: number[];
+  source?: string;
+  asOf?: string;
+  stale?: boolean;
+}
+
+export interface StockQuote {
+  code: string;
+  symbol: string;
+  name: string;
+  price: number;
+  prevClose: number;
+  open: number;
+  high: number;
+  low: number;
+  change: number;
+  pct: number;
+  volume: number;
+  amount: number;
+  turnover: number;
+  asOf: string;
+  source: string;
+  stale: boolean;
 }
 
 export interface SearchItem {

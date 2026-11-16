@@ -122,6 +122,33 @@ pub struct IndexQuote {
     pub change: f64,
     pub pct: f64,
     pub spark: Vec<f64>,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub as_of: String,
+    #[serde(default)]
+    pub stale: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct StockQuote {
+    pub code: String,
+    pub symbol: String,
+    pub name: String,
+    pub price: f64,
+    pub prev_close: f64,
+    pub open: f64,
+    pub high: f64,
+    pub low: f64,
+    pub change: f64,
+    pub pct: f64,
+    pub volume: f64,
+    pub amount: f64,
+    pub turnover: f64,
+    pub as_of: String,
+    pub source: String,
+    pub stale: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]

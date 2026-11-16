@@ -6,7 +6,7 @@ import type { ChartPrefs, ChartSelection, Period, SearchItem, Theme, WatchStock 
 import { esc, fmtBytes, fmtClock, fmtMoney, fmtShortDate, icon, relTime, tierName, weekdayFromYmd } from "./lib/ui";
 import { KLineChart } from "./chart";
 import { TimeShareChart } from "./timeshare";
-import { chartSwitchContext, indicatorSummary, normalizeChartRange, renderChartDock, renderChartToolbar, renderChartView, updateChartDock } from "./views/chart";
+import { chartSwitchContext, indicatorSummary, normalizeChartRange, renderChartDock, renderChartHead, renderChartToolbar, renderChartView, updateChartDock } from "./views/chart";
 import { renderIndices, renderRail, renderTitlebar, syncLabel } from "./views/common";
 import { renderLadder } from "./views/ladder";
 import { renderPool, updatePoolStage, updatePoolTable } from "./views/pool";
@@ -16,6 +16,8 @@ let chart: KLineChart | null = null;
 let timeShareChart: TimeShareChart | null = null;
 let dayToken = 0;
 let chartToken = 0;
+let indicesLoading = false;
+let watchQuoteLoading = false;
 let overlayKind:
   | "search"
   | "settings"
@@ -97,6 +99,12 @@ async function start(): Promise<void> {
   booted = true;
 
   void loadIndices(true);
+  window.setInterval(() => {
+    if (document.hidden) return;
+    void loadIndices(true);
+    if (state.view === "chart" && state.chartStock?.kind === "index") void loadChartQuote(chartToken);
+    void refreshWatchQuotes();
+  }, 20000);
   await ensureCalendar();
   if (state.date) await loadDay(state.date, true);
   if (state.view === "chart" && state.chartStock) {
@@ -290,6 +298,8 @@ async function refreshDay(date: string, token: number, quiet = false): Promise<v
 }
 
 async function loadIndices(refreshing: boolean): Promise<void> {
+  if (indicesLoading) return;
+  indicesLoading = true;
   try {
     const list = await api.getIndices(refreshing);
     if (list.length) {
@@ -301,6 +311,8 @@ async function loadIndices(refreshing: boolean): Promise<void> {
     if (!refreshing) showIndicesUnavailable();
   } catch {
     if (!refreshing) showIndicesUnavailable();
+  } finally {
+    indicesLoading = false;
   }
 }
 
@@ -354,6 +366,7 @@ function openChart(code: string, name: string, market = "", animate = true): voi
   state.chartStock = { code, name, market, kind: "stock" };
   state.view = "chart";
   state.chartData = null;
+  state.chartQuote = null;
   state.chartError = null;
   state.chartLoading = true;
   syncHash();
@@ -367,6 +380,7 @@ function openIndexChart(secid: string, name: string): void {
   state.chartStock = { code: secid, name, market: "", kind: "index", secid };
   state.view = "chart";
   state.chartData = null;
+  state.chartQuote = null;
   state.chartError = null;
   state.chartLoading = true;
   syncHash();
@@ -397,6 +411,31 @@ async function fetchChartData(period: Period, refresh: boolean) {
   return api.getKline(stock.code, period, refresh);
 }
 
+async function loadChartQuote(token: number): Promise<void> {
+  const stock = state.chartStock;
+  if (!stock) return;
+  try {
+    const quote =
+      stock.kind === "index"
+        ? await api.getIndexQuote(stock.secid || stock.code)
+        : await api.getStockQuote(stock.code);
+    if (token !== chartToken || !state.chartStock || state.chartStock.code !== stock.code) return;
+    state.chartQuote = quote;
+    if (stock.kind === "stock") {
+      state.watchQuotes[stock.code] = quote;
+      updateWatchQuoteDom();
+    }
+    updateChartHeadDom();
+  } catch {
+    /* K线仍然可用；报价失败不阻塞图表 */
+  }
+}
+
+function updateChartHeadDom(): void {
+  const head = document.getElementById("chart-head");
+  if (head) head.innerHTML = renderChartHead();
+}
+
 async function loadChart(): Promise<void> {
   const stock = state.chartStock;
   if (!stock) return;
@@ -405,6 +444,7 @@ async function loadChart(): Promise<void> {
   state.chartLoading = true;
   state.chartError = null;
   renderMain({ animate: false });
+  void loadChartQuote(token);
   try {
     const data = await fetchChartData(period, false);
     if (token !== chartToken) return;
@@ -479,7 +519,7 @@ function mountChart(): void {
   if (state.chartMode === "timeshare") {
     if (state.chartPeriod !== "1m" || state.chartData.period !== "1m") return;
     timeShareChart = new TimeShareChart(stage);
-    timeShareChart.setData(state.chartData.candles, state.chartData.prevClose);
+    timeShareChart.setData(state.chartData.candles, state.chartQuote?.prevClose ?? state.chartData.prevClose);
     return;
   }
   chart = new KLineChart(stage, {
@@ -928,6 +968,46 @@ async function loadWatchlist(): Promise<void> {
     /* keep previous */
   }
   updateWatchPanel();
+  void refreshWatchQuotes();
+}
+
+async function refreshWatchQuotes(): Promise<void> {
+  if (watchQuoteLoading) return;
+  const codes = new Set<string>();
+  for (const group of state.watchGroups) {
+    for (const stock of group.stocks) codes.add(stock.code);
+  }
+  const chartStock = state.chartStock;
+  if (chartStock?.kind === "stock") codes.add(chartStock.code);
+  if (!codes.size) return;
+  watchQuoteLoading = true;
+  try {
+    const quotes = await api.getStockQuotes([...codes].slice(0, 80));
+    for (const quote of quotes) state.watchQuotes[quote.code] = quote;
+    if (chartStock?.kind === "stock") {
+      const quote = quotes.find((q) => q.code === chartStock.code);
+      if (quote) {
+        state.chartQuote = quote;
+        updateChartHeadDom();
+      }
+    }
+    updateWatchQuoteDom();
+  } catch {
+    /* keep previous quotes */
+  } finally {
+    watchQuoteLoading = false;
+  }
+}
+
+function updateWatchQuoteDom(): void {
+  document.querySelectorAll<HTMLElement>(".watch-row").forEach((row) => {
+    const code = row.dataset.watchCode;
+    const quote = code ? state.watchQuotes[code] : null;
+    const target = row.querySelector<HTMLElement>(".watch-row-quote");
+    if (!quote || !target) return;
+    target.textContent = `${quote.pct >= 0 ? "+" : ""}${quote.pct.toFixed(2)}%`;
+    target.className = `watch-row-quote text-${quote.pct > 0 ? "up" : quote.pct < 0 ? "down" : "flat"}`;
+  });
 }
 
 function updateWatchPanel(): void {
@@ -1616,7 +1696,7 @@ function openSettings(): void {
         <div class="setting-section">
           <div class="setting-label">关于</div>
           <div class="about-text">
-            天梯 · A股涨停复盘　<b>v1.2.1</b><br />
+            天梯 · A股涨停复盘　<b>v1.2.2</b><br />
             涨停与板块数据来自同花顺公开接口，K线来自东方财富公开接口。<br />
             所有数据仅用于学习复盘，不构成投资建议。快捷键：<b>Ctrl K</b> 搜索，<b>← →</b> 切换交易日，<b>Esc</b> 关闭浮层。
           </div>

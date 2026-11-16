@@ -26,6 +26,58 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
     }
     case "get_indices":
       return mockIndices as T;
+    case "get_stock_quotes": {
+      const codes = (args?.codes as string[] | undefined) ?? [];
+      return codes.map((code) => {
+        const stock = mockDay.stocks.find((s) => s.code === code);
+        const price = stock?.price ?? 10;
+        const pct = stock?.changeRate ?? 0;
+        return {
+          code,
+          symbol: code.startsWith("6") ? `sh${code}` : `sz${code}`,
+          name: stock?.name ?? code,
+          price,
+          prevClose: price,
+          open: price,
+          high: price,
+          low: price,
+          change: 0,
+          pct,
+          volume: 0,
+          amount: stock?.amount ?? 0,
+          turnover: stock?.turnoverRate ?? 0,
+          asOf: new Date().toISOString(),
+          source: "mock",
+          stale: false,
+        };
+      }) as T;
+    }
+    case "get_stock_quote":
+    case "get_index_quote": {
+      const code = String(args?.code ?? args?.secid ?? "").replace(/^[01]\./, "");
+      const stock = mockDay.stocks.find((s) => s.code === code) ?? mockDay.stocks[0];
+      const price = stock?.price ?? 10;
+      const pct = stock?.changeRate ?? 0;
+      const prevClose = pct === -100 ? price : price / (1 + pct / 100);
+      return {
+        code: stock?.code ?? code,
+        symbol: code.startsWith("6") ? `sh${code}` : `sz${code}`,
+        name: stock?.name ?? "指数",
+        price,
+        prevClose,
+        open: prevClose,
+        high: Math.max(price, prevClose),
+        low: Math.min(price, prevClose),
+        change: price - prevClose,
+        pct,
+        volume: 0,
+        amount: stock?.amount ?? 0,
+        turnover: stock?.turnoverRate ?? 0,
+        asOf: new Date().toISOString(),
+        source: "mock",
+        stale: false,
+      } as T;
+    }
     case "search_stocks": {
       const q = String(args?.query ?? "").trim();
       if (!q) return [] as T;

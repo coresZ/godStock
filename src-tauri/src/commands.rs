@@ -237,6 +237,9 @@ fn read_indices(state: &AppState) -> Result<Vec<IndexQuote>, String> {
             change: last.1 - prev_close,
             pct: last.2,
             spark: rows.iter().map(|r| r.1).collect(),
+            source: "cache".into(),
+            as_of: last.0.clone(),
+            stale: true,
         });
     }
     Ok(out)
@@ -336,17 +339,77 @@ pub async fn get_indices(state: State<'_, AppState>, refresh: bool) -> Result<Ve
             return Ok(cached);
         }
     }
-    let series = source::fetch_indices(&state.client).await;
-    if !series.is_empty() {
-        if let Ok(mut conn) = state_conn(&state) {
-            for (code, rows) in &series {
-                if let Err(e) = db::save_index_series(&mut conn, code, rows) {
-                    eprintln!("save index failed: {e:#}");
+    match source::fetch_indices(&state.client).await {
+        Ok(live) if !live.is_empty() => {
+            if let Ok(conn) = state_conn(&state) {
+                for quote in &live {
+                    if let Err(e) = db::upsert_index_point(&conn, &quote.code, &quote.as_of, quote.price, quote.pct) {
+                        eprintln!("save index point failed: {e:#}");
+                    }
                 }
+            }
+            Ok(live)
+        }
+        _ => {
+            let cached = read_indices(&state)?;
+            if cached.is_empty() {
+                Err("指数实时行情暂时不可用，且本地没有缓存".into())
+            } else {
+                Ok(cached)
             }
         }
     }
-    read_indices(&state)
+}
+
+#[tauri::command]
+pub async fn get_stock_quote(
+    state: State<'_, AppState>,
+    code: String,
+) -> Result<StockQuote, String> {
+    let code = code.trim().to_string();
+    if code.len() != 6 || !code.chars().all(|c| c.is_ascii_digit()) {
+        return Err("股票代码应为 6 位数字".into());
+    }
+    source::fetch_stock_quote(&state.client, &code)
+        .await
+        .map_err(|e| format!("个股实时行情不可用 · {e:#}"))
+}
+
+#[tauri::command]
+pub async fn get_stock_quotes(
+    state: State<'_, AppState>,
+    codes: Vec<String>,
+) -> Result<Vec<StockQuote>, String> {
+    let mut clean = Vec::new();
+    for code in codes {
+        let code = code.trim().to_string();
+        if code.len() == 6 && code.chars().all(|c| c.is_ascii_digit()) && !clean.contains(&code) {
+            clean.push(code);
+        }
+        if clean.len() >= 80 {
+            break;
+        }
+    }
+    if clean.is_empty() {
+        return Ok(Vec::new());
+    }
+    source::fetch_stock_quotes(&state.client, &clean)
+        .await
+        .map_err(|e| format!("个股实时行情不可用 · {e:#}"))
+}
+
+#[tauri::command]
+pub async fn get_index_quote(
+    state: State<'_, AppState>,
+    secid: String,
+) -> Result<StockQuote, String> {
+    let secid = secid.trim().to_string();
+    if !matches!(secid.as_str(), "1.000001" | "0.399001" | "0.399006") {
+        return Err("不支持的指数".into());
+    }
+    source::fetch_index_quote(&state.client, &secid)
+        .await
+        .map_err(|e| format!("指数实时行情不可用 · {e:#}"))
 }
 
 #[tauri::command]

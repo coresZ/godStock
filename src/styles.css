@@ -3435,3 +3435,19 @@ input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
 }
 
 .indicator-modal { max-height: calc(100vh - 76px); }
+
+.live-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--faint);
+  font-size: 8px;
+  letter-spacing: .04em;
+}
+.live-tag::before { content: ""; width: 4px; height: 4px; border-radius: 50%; background: var(--down); opacity: .8; }
+
+.index.is-stale .index-value { opacity: .6; }
+.index.is-stale .index-name::after { content: " · 缓存"; color: var(--faint); font-size: 7px; letter-spacing: 0; }

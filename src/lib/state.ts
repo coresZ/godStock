@@ -10,6 +10,7 @@ import type {
   PoolKind,
   SearchItem,
   Stock,
+  StockQuote,
   Theme,
   ViewName,
   WatchGroup,
@@ -43,6 +44,8 @@ export interface AppState {
   chartPeriod: Period;
   chartMode: "kline" | "timeshare";
   chartData: KlinePayload | null;
+  chartQuote: StockQuote | null;
+  watchQuotes: Record<string, StockQuote>;
   chartLoading: boolean;
   chartError: string | null;
   chartRange: number;
@@ -79,6 +82,8 @@ export const state: AppState = {
   chartPeriod: "day",
   chartMode: "kline",
   chartData: null,
+  chartQuote: null,
+  watchQuotes: {},
   chartLoading: false,
   chartError: null,
   chartRange: 120,
