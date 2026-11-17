@@ -852,6 +852,11 @@ export class KLineChart {
     c.font = '8.5px "IBM Plex Mono", monospace';
     c.fillStyle = this.colors.faint;
     c.textBaseline = "top";
+    if (this.period === "1m" && this.sameVisibleDay(start, count)) {
+      this.drawIntradayAxisDates(l, start, count, xAt);
+      c.restore();
+      return;
+    }
     for (let t = 0; t < tickCount; t++) {
       const idx = start + Math.round(((count - 1) * t) / Math.max(1, tickCount - 1));
       const d = this.candles[idx];
@@ -862,6 +867,55 @@ export class KLineChart {
       c.fillText(label, x, l.height - l.bottom + 8);
     }
     c.restore();
+  }
+
+  private sameVisibleDay(start: number, count: number): boolean {
+    const first = this.candles[start];
+    const last = this.candles[start + count - 1];
+    return Boolean(first && last && first.date.slice(0, 10) === last.date.slice(0, 10));
+  }
+
+  private drawIntradayAxisDates(
+    l: Layout,
+    start: number,
+    count: number,
+    xAt: (i: number) => number,
+  ): void {
+    const c = this.ctx;
+    const targets = [
+      { time: "09:30", label: "09:30" },
+      { time: "10:30", label: "10:30" },
+      { time: "11:30", label: "11:30/13:00" },
+      { time: "14:00", label: "14:00" },
+      { time: "15:00", label: "15:00" },
+    ];
+    let lastX = -Infinity;
+    targets.forEach((target, index) => {
+      let idx = -1;
+      for (let i = start; i < start + count; i++) {
+        const row = this.candles[i];
+        if (row && row.date.slice(11, 16) >= target.time) {
+          idx = i;
+          break;
+        }
+      }
+      if (idx < 0) return;
+      const actual = this.candles[idx].date.slice(11, 16);
+      const toMin = (value: string) => Number(value.slice(0, 2)) * 60 + Number(value.slice(3, 5));
+      if (toMin(actual) - toMin(target.time) > 3) return;
+      const x = Math.round(xAt(idx)) + 0.5;
+      if (x - lastX < 62) return;
+      c.strokeStyle = this.colors.line;
+      c.globalAlpha = 0.5;
+      c.beginPath();
+      c.moveTo(x, l.priceBottom);
+      c.lineTo(x, l.priceBottom + 4);
+      c.stroke();
+      c.globalAlpha = 1;
+      c.textAlign = index === 0 ? "left" : target.time === "15:00" ? "right" : "center";
+      c.fillText(target.label, x, l.height - l.bottom + 8);
+      lastX = x;
+    });
   }
 
   private formatAxisDate(date: string): string {
@@ -919,18 +973,6 @@ export class KLineChart {
     c.textAlign = "left";
     c.textBaseline = "middle";
     c.fillText(label, rx + 4, y);
-    const dateLabel = this.fullDate(d.date);
-    c.font = '8.5px "IBM Plex Mono", monospace';
-    const tw = c.measureText(dateLabel).width;
-    const tx = clamp(x - tw / 2 - 6, l.left, l.width - l.axisRight - tw - 12);
-    c.fillStyle = this.colors.brass;
-    c.globalAlpha = 0.18;
-    roundRect(c, tx, l.height - l.bottom + 2, tw + 12, 16, 3);
-    c.fill();
-    c.globalAlpha = 1;
-    c.fillStyle = this.colors.brass;
-    c.textAlign = "left";
-    c.fillText(dateLabel, tx + 6, l.height - l.bottom + 10);
     c.restore();
   }
 

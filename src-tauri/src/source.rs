@@ -543,7 +543,7 @@ fn period_klt(period: &str) -> &'static str {
 
 fn kline_limit(period: &str) -> i64 {
     match period {
-        "1m" => 1200,
+        "1m" => 240,
         "15m" | "30m" | "60m" => 800,
         _ => 500,
     }

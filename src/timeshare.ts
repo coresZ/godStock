@@ -90,7 +90,9 @@ export class TimeShareChart {
       return;
     }
     const day = last.date.slice(0, 10);
-    this.rows = candles.filter((c) => c.date.startsWith(day));
+    this.rows = candles
+      .filter((c) => c.date.startsWith(day))
+      .sort((a, b) => a.date.localeCompare(b.date));
     this.base = prevClose && prevClose > 0 ? prevClose : this.rows[0]?.open || this.rows[0]?.close || 0;
     let amount = 0;
     let volume = 0;
@@ -306,22 +308,27 @@ export class TimeShareChart {
     c.fillStyle = this.colors.muted;
     c.textBaseline = "top";
     const timeAt = (i: number) => this.rows[clamp(i, 0, this.rows.length - 1)].date.slice(11, 16);
-    const findTime = (wanted: string, fallback: number) => {
+    const findTime = (wanted: string) => {
       const found = this.rows.findIndex((row) => row.date.slice(11, 16) >= wanted);
-      return found >= 0 ? found : fallback;
+      return found >= 0 ? found : -1;
     };
+    const firstTime = timeAt(0);
     const ticks = [
-      { i: 0, label: "09:30" },
-      { i: findTime("10:30", Math.round((this.rows.length - 1) * 0.25)), label: "10:30" },
-      { i: findTime("11:30", Math.round((this.rows.length - 1) * 0.5)), label: "11:30/13:00" },
-      { i: findTime("14:00", Math.round((this.rows.length - 1) * 0.75)), label: "14:00" },
-      { i: this.rows.length - 1, label: "15:00" },
-    ].filter((tick, index, list) => index === 0 || tick.i > list[index - 1].i);
+      { i: 0, label: firstTime <= "09:35" ? "09:30" : firstTime },
+      { i: findTime("10:30"), label: "10:30" },
+      { i: findTime("11:30"), label: "11:30/13:00" },
+      { i: findTime("14:00"), label: "14:00" },
+      { i: findTime("15:00"), label: "15:00" },
+    ]
+      .filter((tick, index, list) => tick.i >= 0 && (index === 0 || tick.i > list[index - 1].i));
+    const lastIdx = this.rows.length - 1;
+    if (ticks[ticks.length - 1]?.i !== lastIdx) {
+      ticks.push({ i: lastIdx, label: timeAt(lastIdx) });
+    }
     ticks.forEach((tick, index) => {
       const x = xAt(tick.i);
       c.textAlign = index === 0 ? "left" : index === ticks.length - 1 ? "right" : "center";
-      const label = tick.label === "15:00" && timeAt(tick.i) !== "15:00" ? timeAt(tick.i) : tick.label;
-      c.fillText(label, x, height - 16);
+      c.fillText(tick.label, x, height - 16);
     });
 
     // 十字光标

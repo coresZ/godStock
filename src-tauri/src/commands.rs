@@ -21,6 +21,17 @@ fn state_conn(state: &AppState) -> Result<rusqlite::Connection, String> {
     db::connect(&state.db_path).map_err(|e| err(e))
 }
 
+fn trim_to_last_day(candles: Vec<KlineCandle>) -> Vec<KlineCandle> {
+    let Some(last) = candles.last() else {
+        return candles;
+    };
+    let day = last.date.chars().take(10).collect::<String>();
+    candles
+        .into_iter()
+        .filter(|candle| candle.date.starts_with(&day))
+        .collect()
+}
+
 fn index_name(code: &str) -> &'static str {
     match code {
         "1.000001" => "上证指数",
@@ -166,6 +177,7 @@ pub async fn get_kline(
         };
         (loaded.0, name, loaded.2)
     };
+    let cached = if period == "1m" { trim_to_last_day(cached) } else { cached };
 
     if !refresh && !cached.is_empty() {
         return Ok(KlinePayload {
@@ -182,6 +194,7 @@ pub async fn get_kline(
 
     match source::fetch_kline(&state.client, &code, &period).await {
         Ok((name, candles)) => {
+            let candles = if period == "1m" { trim_to_last_day(candles) } else { candles };
             let mut conn = state_conn(&state)?;
             if let Err(e) = db::save_klines(&mut conn, &code, &period, &name, &candles) {
                 eprintln!("save kline failed: {e:#}");
@@ -283,6 +296,7 @@ pub async fn get_index_kline(
         let loaded = db::load_klines(&conn, &secid, &period).map_err(|e| err(e))?;
         (loaded.0, loaded.1, loaded.2)
     };
+    let cached = if period == "1m" { trim_to_last_day(cached) } else { cached };
     if !refresh && !cached.is_empty() {
         return Ok(KlinePayload {
             code: secid,
@@ -297,6 +311,7 @@ pub async fn get_index_kline(
     }
     match source::fetch_index_kline(&state.client, &secid, &period).await {
         Ok((_name, candles)) => {
+            let candles = if period == "1m" { trim_to_last_day(candles) } else { candles };
             let mut conn = state_conn(&state)?;
             if let Err(e) = db::save_klines(&mut conn, &secid, &period, "", &candles) {
                 eprintln!("save index kline failed: {e:#}");
