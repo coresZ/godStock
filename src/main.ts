@@ -89,6 +89,10 @@ async function start(): Promise<void> {
   initDropdowns();
   document.addEventListener("dd-change", (event) => {
     const trigger = event.target as HTMLElement;
+    if (trigger.dataset.ddKind === "range") {
+      applyChartRange(Number(trigger.dataset.value || "120"));
+      return;
+    }
     if (trigger.dataset.ddKind !== "sector") return;
     state.poolKind = "limitUp";
     state.poolSector = trigger.dataset.value || "";
@@ -96,6 +100,7 @@ async function start(): Promise<void> {
   });
   renderShell();
   bindGlobals();
+  window.addEventListener("resize", syncToolbarOverflow);
   booted = true;
 
   void loadIndices(true);
@@ -431,6 +436,22 @@ async function loadChartQuote(token: number): Promise<void> {
   }
 }
 
+function persistChartViewPrefs(): void {
+  try {
+    localStorage.setItem("tianti.chartRanges", JSON.stringify(state.chartRanges));
+    localStorage.setItem("tianti.timeshareAxis", state.timeshareAxis);
+  } catch {
+    // Preferences are optional; ignore storage failures.
+  }
+}
+
+function applyChartRange(value: number): void {
+  state.chartRange = value;
+  state.chartRanges[state.chartPeriod] = value;
+  chart?.setRange(value);
+  persistChartViewPrefs();
+}
+
 function updateChartHeadDom(): void {
   const head = document.getElementById("chart-head");
   if (head) head.innerHTML = renderChartHead();
@@ -504,6 +525,7 @@ function renderMain(opts: { animate?: boolean } = {}): void {
   main.innerHTML = html;
   if (opts.animate === false) main.querySelector(".view")?.classList.add("no-anim");
   if (state.view === "chart" && state.chartStock && state.chartData) mountChart();
+  syncToolbarOverflow();
   const ladderScroller = main.querySelector<HTMLElement>(".ladder-main");
   if (ladderScroller) ladderScroller.scrollTop = scrolls.ladder;
   const poolScroller = main.querySelector<HTMLElement>(".pool-body");
@@ -513,12 +535,25 @@ function renderMain(opts: { animate?: boolean } = {}): void {
   updateChrome();
 }
 
+const toolbarObservers = new WeakSet<HTMLElement>();
+
+function syncToolbarOverflow(): void {
+  document.querySelectorAll<HTMLElement>(".chart-toolbar-controls").forEach((el) => {
+    const update = () => el.classList.toggle("is-scrollable", el.scrollWidth > el.clientWidth + 1);
+    update();
+    if (!toolbarObservers.has(el)) {
+      toolbarObservers.add(el);
+      new ResizeObserver(update).observe(el);
+    }
+  });
+}
+
 function mountChart(): void {
   const stage = document.getElementById("chart-stage");
   if (!stage || !state.chartData) return;
   if (state.chartMode === "timeshare") {
     if (state.chartPeriod !== "1m" || state.chartData.period !== "1m") return;
-    timeShareChart = new TimeShareChart(stage);
+    timeShareChart = new TimeShareChart(stage, state.timeshareAxis);
     timeShareChart.setData(state.chartData.candles, state.chartQuote?.prevClose ?? state.chartData.prevClose);
     return;
   }
@@ -536,6 +571,18 @@ function bindGlobals(): void {
   const app = document.getElementById("app")!;
   app.addEventListener("click", (e) => handleClick(e));
   app.addEventListener("input", (e) => handleInput(e));
+  app.addEventListener(
+    "wheel",
+    (e) => {
+      const controls = (e.target as HTMLElement).closest<HTMLElement>(".chart-toolbar-controls");
+      if (!controls || controls.scrollWidth <= controls.clientWidth + 1) return;
+      const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+      if (!delta) return;
+      controls.scrollLeft += delta;
+      e.preventDefault();
+    },
+    { passive: false },
+  );
   app.addEventListener("change", (e) => handleChange(e));
   app.addEventListener("keydown", (e) => handleKeydown(e));
   app.addEventListener("contextmenu", (e) => handleContextMenu(e));
@@ -685,14 +732,23 @@ function handleClick(e: MouseEvent): void {
     openIndexChart(indexEl.dataset.indexSecid!, indexEl.dataset.indexName || "指数");
     return;
   }
+  const axisBtn = target.closest<HTMLElement>("[data-timeshare-axis]");
+  if (axisBtn) {
+    const mode = axisBtn.dataset.timeshareAxis === "follow" ? "follow" : "full";
+    state.timeshareAxis = mode;
+    timeShareChart?.setAxisMode(mode);
+    persistChartViewPrefs();
+    document.querySelectorAll<HTMLElement>("[data-timeshare-axis]").forEach((el) => {
+      el.classList.toggle("active", el.dataset.timeshareAxis === mode);
+    });
+    return;
+  }
   const modeBtn = target.closest<HTMLElement>('[data-chart-mode="timeshare"]');
   if (modeBtn) {
     const needData = state.chartPeriod !== "1m" || state.chartData?.period !== "1m";
     state.chartMode = "timeshare";
-    if (state.chartPeriod !== "1m") {
-      state.chartPeriod = "1m";
-      state.chartRange = 0;
-    }
+    if (state.chartPeriod !== "1m") state.chartPeriod = "1m";
+    state.chartRange = 0;
     state.chartLoading = needData;
     renderMain({ animate: false });
     if (needData) void loadChart();
@@ -703,28 +759,19 @@ function handleClick(e: MouseEvent): void {
     const p = periodBtn.dataset.chartPeriod as Period;
     const wasTimeshare = state.chartMode === "timeshare";
     state.chartMode = "kline";
+    state.chartRange = normalizeChartRange(p, state.chartRanges[p] ?? state.chartRange);
+    state.chartRanges[p] = state.chartRange;
+    persistChartViewPrefs();
     if (p === state.chartPeriod && state.chartData?.period === p) {
       renderMain({ animate: false });
       return;
     }
     if (p !== state.chartPeriod || wasTimeshare) {
-      const wasIntradayMinute = state.chartPeriod === "1m";
       state.chartPeriod = p;
-      state.chartRange = p === "1m" && !wasIntradayMinute && state.chartRange !== 0 ? 240 : normalizeChartRange(p, state.chartRange);
       state.chartLoading = true;
       renderMain({ animate: false });
       void loadChart();
     }
-    return;
-  }
-  const rangeBtn = target.closest<HTMLElement>("[data-chart-range]");
-  if (rangeBtn) {
-    const value = Number(rangeBtn.dataset.chartRange || "120");
-    state.chartRange = value;
-    document.querySelectorAll<HTMLElement>("[data-chart-range]").forEach((el) => {
-      el.classList.toggle("active", Number(el.dataset.chartRange) === value);
-    });
-    chart?.setRange(value);
     return;
   }
   const indicator = target.closest<HTMLElement>("[data-indicator]");

@@ -279,7 +279,9 @@ export function renderChartToolbar(): string {
   const prefs = state.chartPrefs;
   const moreActive = MORE_PERIODS.find((p) => p.value === state.chartPeriod);
   const ranges = rangeOptions(state.chartPeriod);
-  return `<div class="seg chart-periods" role="group" aria-label="K线周期">
+  const activeRange = ranges.find((r) => r.value === state.chartRange) ?? ranges[0];
+  return `<div class="chart-toolbar-controls">
+    <div class="seg chart-periods" role="group" aria-label="K线周期">
       <button class="${state.chartMode === "timeshare" ? "active" : ""}" data-chart-mode="timeshare">分时</button>
       ${PRIMARY_PERIODS.map((p) => `<button class="${state.chartMode === "kline" && state.chartPeriod === p.value ? "active" : ""}" data-chart-period="${p.value}">${p.label}</button>`).join("")}
     </div>
@@ -291,23 +293,31 @@ export function renderChartToolbar(): string {
         ${MORE_PERIODS.map((p) => `<button class="${state.chartMode === "kline" && state.chartPeriod === p.value ? "active" : ""}" data-chart-period="${p.value}">${p.label}${state.chartMode === "kline" && state.chartPeriod === p.value ? icon("check", 12) : ""}</button>`).join("")}
       </div>
     </div>
-    ${state.chartMode === "kline" ? `<div class="seg chart-ranges" role="group" aria-label="显示区间">
-      ${ranges.map((r) => `<button class="${state.chartRange === r.value ? "active" : ""}" data-chart-range="${r.value}">${r.label}</button>`).join("")}
+    ${state.chartMode === "kline" ? `<div class="dd chart-range-dd">
+      <button type="button" class="dd-trigger" data-dd-trigger data-dd-kind="range" data-dd-menu="118" data-value="${state.chartRange}" aria-haspopup="listbox" aria-expanded="false">
+        <span class="dd-label">${activeRange.label}</span>${icon("chevronDown", 11)}
+      </button>
+      <div class="dd-options" hidden>
+        ${ranges.map((r) => `<button type="button" data-value="${r.value}">${r.label}</button>`).join("")}
+      </div>
     </div>
     <span class="toolbar-divider"></span>
-    <span class="toolbar-break"></span>
     <div class="chart-indicators">
       <button class="chip ${prefs.maEnabled ? "active" : ""}" data-indicator="ma" aria-pressed="${prefs.maEnabled}">MA</button>
       <button class="chip ${prefs.emaEnabled ? "active" : ""}" data-indicator="ema" aria-pressed="${prefs.emaEnabled}">EMA</button>
       <button class="chip ${prefs.kdjEnabled ? "active" : ""}" data-indicator="kdj" aria-pressed="${prefs.kdjEnabled}">KDJ</button>
     </div>
     <button class="chart-settings-btn" data-action="indicator-settings" title="MA / EMA 颜色、粗细、虚实；KDJ 系数">${icon("sliders", 14)}<span>参数</span></button>
-    <button class="chart-info" aria-label="指标说明">${icon("info", 13)}<span class="info-pop"><b>MA</b> 简单移动平均 · <b>EMA</b> 指数移动平均 · <b>KDJ</b> 随机指标。颜色、粗细、虚实可在「参数」里修改。指标仅辅助观察，不构成投资建议。</span></button>` : `<span class="chart-timeshare-chip">日内走势 · 均价线</span>`}
-    <div class="chart-toolbar-spacer"></div>
-    <div class="chart-toolbar-actions">
-      ${state.chartStock?.kind === "stock" ? renderChartSwitchAction() : ""}
-      ${state.chartStock?.kind === "stock" ? `<button class="chart-watch-add" data-action="watch-add-current">${icon("plus", 12)} 加自选</button>` : ""}
-    </div>`;
+    <button class="chart-info" aria-label="指标说明">${icon("info", 13)}<span class="info-pop"><b>MA</b> 简单移动平均 · <b>EMA</b> 指数移动平均 · <b>KDJ</b> 随机指标。颜色、粗细、虚实可在「参数」里修改。指标仅辅助观察，不构成投资建议。</span></button>` : `<div class="seg ts-axis-modes" role="group" aria-label="分时时间轴">
+      <button class="${state.timeshareAxis === "full" ? "active" : ""}" data-timeshare-axis="full">全天</button>
+      <button class="${state.timeshareAxis === "follow" ? "active" : ""}" data-timeshare-axis="follow">跟随</button>
+    </div>
+    <span class="chart-timeshare-chip">日内走势 · 均价线</span>`}
+  </div>
+  <div class="chart-toolbar-actions">
+    ${state.chartStock?.kind === "stock" ? renderChartSwitchAction() : ""}
+    ${state.chartStock?.kind === "stock" ? `<button class="chart-watch-add" data-action="watch-add-current">${icon("plus", 12)} 加自选</button>` : ""}
+  </div>`;
 }
 
 function renderChartSwitchAction(): string {

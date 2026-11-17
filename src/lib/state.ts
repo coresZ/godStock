@@ -43,6 +43,8 @@ export interface AppState {
   chartStock: ChartSelection | null;
   chartPeriod: Period;
   chartMode: "kline" | "timeshare";
+  chartRanges: Record<Period, number>;
+  timeshareAxis: "full" | "follow";
   chartData: KlinePayload | null;
   chartQuote: StockQuote | null;
   watchQuotes: Record<string, StockQuote>;
@@ -66,6 +68,43 @@ export interface AppState {
   settingsOpen: boolean;
 }
 
+const DEFAULT_CHART_RANGES: Record<Period, number> = {
+  "1m": 240,
+  "15m": 120,
+  "30m": 120,
+  "60m": 120,
+  day: 120,
+  week: 120,
+  month: 120,
+  year: 120,
+};
+
+function loadChartRanges(): Record<Period, number> {
+  const ranges = { ...DEFAULT_CHART_RANGES };
+  try {
+    const raw = JSON.parse(localStorage.getItem("tianti.chartRanges") || "null") as Record<string, unknown> | null;
+    if (raw && typeof raw === "object") {
+      (Object.keys(ranges) as Period[]).forEach((key) => {
+        const value = Number(raw[key]);
+        if (Number.isFinite(value) && value >= 0) ranges[key] = value;
+      });
+    }
+  } catch {
+    // localStorage may be unavailable in a fresh webview; defaults are fine.
+  }
+  return ranges;
+}
+
+function loadTimeshareAxis(): "full" | "follow" {
+  try {
+    return localStorage.getItem("tianti.timeshareAxis") === "follow" ? "follow" : "full";
+  } catch {
+    return "full";
+  }
+}
+
+const initialChartRanges = loadChartRanges();
+
 export const state: AppState = {
   theme: "dark",
   uiScale: 1.10,
@@ -81,12 +120,14 @@ export const state: AppState = {
   chartStock: null,
   chartPeriod: "day",
   chartMode: "kline",
+  chartRanges: initialChartRanges,
+  timeshareAxis: loadTimeshareAxis(),
   chartData: null,
   chartQuote: null,
   watchQuotes: {},
   chartLoading: false,
   chartError: null,
-  chartRange: 120,
+  chartRange: initialChartRanges.day,
   chartPrefs: {
     maEnabled: false,
     maLines: [

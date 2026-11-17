@@ -43,13 +43,15 @@ export class TimeShareChart {
   private base = 0;
   private hover: number | null = null;
   private layout: TsLayout | null = null;
+  private axisMode: "full" | "follow";
   private colors: TsColors;
   private observer: ResizeObserver;
   private abort = new AbortController();
   private raf = 0;
 
-  constructor(container: HTMLElement) {
+  constructor(container: HTMLElement, axisMode: "full" | "follow" = "full") {
     this.container = container;
+    this.axisMode = axisMode;
     container.classList.add("timeshare-host");
     container.innerHTML = `<canvas aria-label="分时走势" role="img"></canvas>
       <div class="ts-legend"></div>
@@ -109,6 +111,12 @@ export class TimeShareChart {
     this.draw();
   }
 
+  setAxisMode(mode: "full" | "follow"): void {
+    if (this.axisMode === mode) return;
+    this.axisMode = mode;
+    this.draw();
+  }
+
   redraw(): void {
     this.colors = this.readColors();
     this.draw();
@@ -144,9 +152,40 @@ export class TimeShareChart {
     );
   }
 
+  private sessionMinute(index: number): number {
+    const date = this.rows[clamp(index, 0, this.rows.length - 1)]?.date ?? "";
+    const hour = Number(date.slice(11, 13));
+    const minute = Number(date.slice(14, 16));
+    if (!Number.isFinite(hour) || !Number.isFinite(minute)) return 0;
+    const clock = hour * 60 + minute;
+    if (clock <= 690) return clamp(clock - 570, 0, 120);
+    if (clock >= 780) return clamp(120 + clock - 780, 120, 240);
+    return 120;
+  }
+
+  private xAt(index: number, layout: TsLayout): number {
+    const plotW = Math.max(1, layout.width - layout.left - layout.right);
+    if (this.axisMode === "full") {
+      return layout.left + (this.sessionMinute(index) / 240) * plotW;
+    }
+    return layout.left + (index / Math.max(1, this.rows.length - 1)) * plotW;
+  }
+
   private indexAt(x: number): number {
     const l = this.layout;
     if (!l || this.rows.length < 2) return 0;
+    if (this.axisMode === "full") {
+      let best = 0;
+      let distance = Number.POSITIVE_INFINITY;
+      for (let i = 0; i < this.rows.length; i++) {
+        const next = Math.abs(this.xAt(i, l) - x);
+        if (next < distance) {
+          distance = next;
+          best = i;
+        }
+      }
+      return best;
+    }
     const ratio = clamp((x - l.left) / Math.max(1, l.width - l.left - l.right), 0, 1);
     return Math.round(ratio * (this.rows.length - 1));
   }
@@ -214,7 +253,7 @@ export class TimeShareChart {
     };
     this.layout = layout;
     const plotW = Math.max(1, width - left - right);
-    const xAt = (i: number) => left + (i / Math.max(1, this.rows.length - 1)) * plotW;
+    const xAt = (i: number) => this.xAt(i, layout);
     const yAt = (v: number) => top + ((priceMax - v) / (priceMax - priceMin)) * (priceBottom - top);
 
     c.save();
@@ -290,7 +329,8 @@ export class TimeShareChart {
     c.moveTo(left, volTop - 0.5);
     c.lineTo(width - right, volTop - 0.5);
     c.stroke();
-    const barW = Math.max(0.6, Math.min(4, plotW / this.rows.length - 0.5));
+    const slotCount = this.axisMode === "full" ? 240 : this.rows.length;
+    const barW = Math.max(0.6, Math.min(4, plotW / Math.max(1, slotCount) - 0.5));
     c.globalAlpha = 0.72;
     this.rows.forEach((r, i) => {
       const h = (r.volume / volMax) * (volBottom - volTop - 6);
@@ -303,33 +343,45 @@ export class TimeShareChart {
     c.textAlign = "left";
     c.fillText("成交量", left, volTop + 8);
 
-    // 时间刻度：固定交易日关键时点，午休合并成一个刻点。
+    // 时间刻度：全天模式固定 09:30–15:00；跟随模式只画已经发生的时点。
     c.font = '10px "IBM Plex Mono", monospace';
     c.fillStyle = this.colors.muted;
     c.textBaseline = "top";
-    const timeAt = (i: number) => this.rows[clamp(i, 0, this.rows.length - 1)].date.slice(11, 16);
-    const findTime = (wanted: string) => {
-      const found = this.rows.findIndex((row) => row.date.slice(11, 16) >= wanted);
-      return found >= 0 ? found : -1;
-    };
-    const firstTime = timeAt(0);
-    const ticks = [
-      { i: 0, label: firstTime <= "09:35" ? "09:30" : firstTime },
-      { i: findTime("10:30"), label: "10:30" },
-      { i: findTime("11:30"), label: "11:30/13:00" },
-      { i: findTime("14:00"), label: "14:00" },
-      { i: findTime("15:00"), label: "15:00" },
-    ]
-      .filter((tick, index, list) => tick.i >= 0 && (index === 0 || tick.i > list[index - 1].i));
-    const lastIdx = this.rows.length - 1;
-    if (ticks[ticks.length - 1]?.i !== lastIdx) {
-      ticks.push({ i: lastIdx, label: timeAt(lastIdx) });
+    if (this.axisMode === "full") {
+      const marks = [
+        { minute: 0, label: "09:30" },
+        { minute: 60, label: "10:30" },
+        { minute: 120, label: "11:30/13:00" },
+        { minute: 180, label: "14:00" },
+        { minute: 240, label: "15:00" },
+      ];
+      marks.forEach((mark, index) => {
+        const x = left + (mark.minute / 240) * plotW;
+        c.textAlign = index === 0 ? "left" : index === marks.length - 1 ? "right" : "center";
+        c.fillText(mark.label, x, height - 16);
+      });
+    } else {
+      const timeAt = (i: number) => this.rows[clamp(i, 0, this.rows.length - 1)].date.slice(11, 16);
+      const findTime = (wanted: string) => {
+        const found = this.rows.findIndex((row) => row.date.slice(11, 16) >= wanted);
+        return found >= 0 ? found : -1;
+      };
+      const firstTime = timeAt(0);
+      const ticks = [
+        { i: 0, label: firstTime <= "09:35" ? "09:30" : firstTime },
+        { i: findTime("10:30"), label: "10:30" },
+        { i: findTime("11:30"), label: "11:30/13:00" },
+        { i: findTime("14:00"), label: "14:00" },
+        { i: findTime("15:00"), label: "15:00" },
+      ].filter((tick, index, list) => tick.i >= 0 && (index === 0 || tick.i > list[index - 1].i));
+      const lastIdx = this.rows.length - 1;
+      if (ticks[ticks.length - 1]?.i !== lastIdx) ticks.push({ i: lastIdx, label: timeAt(lastIdx) });
+      ticks.forEach((tick, index) => {
+        const x = xAt(tick.i);
+        c.textAlign = index === 0 ? "left" : index === ticks.length - 1 ? "right" : "center";
+        c.fillText(tick.label, x, height - 16);
+      });
     }
-    ticks.forEach((tick, index) => {
-      const x = xAt(tick.i);
-      c.textAlign = index === 0 ? "left" : index === ticks.length - 1 ? "right" : "center";
-      c.fillText(tick.label, x, height - 16);
-    });
 
     // 十字光标
     if (this.hover != null && this.hover >= 0 && this.hover < this.rows.length) {
