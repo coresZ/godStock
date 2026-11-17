@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite --port 1420 --strictPort",
     "build": "tsc --noEmit && vite build",
+    "build:exe": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-exe.ps1",
+    "build:exe:debug": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-exe.ps1 -DebugBuild",
     "preview": "vite preview --port 1420 --strictPort"
   },
   "devDependencies": {

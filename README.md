@@ -54,9 +54,10 @@
 ```bash
 pnpm install
 pnpm dev            # 浏览器调试（带 dev mock 数据）
-pnpm build
-cargo build --release --manifest-path src-tauri/Cargo.toml --features custom-protocol
+pnpm build:exe      # 构建 release exe，输出到 release/TianTi.exe
 ```
+
+`build:exe` 会先跑 TypeScript 检查和 Vite 构建，再用 `custom-protocol` 编译 Rust，最后把 exe 复制到 `release/TianTi.exe`；不会生成 zip 或校验文件。调试构建用 `pnpm build:exe:debug`。
 
 `custom-protocol` 是 Tauri 的正式构建特性：启用后 exe 内嵌前端资源，不再依赖 `localhost:1420`。未启用时按开发模式运行。
 
