@@ -997,6 +997,66 @@ button.section-note:hover { color: var(--brass); }
 html[data-theme="light"] .spark-area { opacity: .05; }
 html[data-theme="light"] .hero-spark .spark-area { opacity: .07; }
 
+/* intraday sparkline: clock-aware line, live last point */
+.intraday-spark { overflow: visible; }
+.intraday-spark .spark-now {
+  stroke: var(--line-strong);
+  stroke-width: .8;
+  stroke-dasharray: 2 3;
+  opacity: .5;
+  vector-effect: non-scaling-stroke;
+}
+.spark-dot { fill: var(--muted); stroke: none; }
+.spark-up .spark-dot { fill: var(--up); }
+.spark-down .spark-dot { fill: var(--down); }
+.spark-flat .spark-dot { fill: var(--faint); }
+.spark-pulse {
+  fill: var(--up);
+  opacity: 0;
+  animation: sparkBlink 1.7s var(--ease) infinite;
+}
+@keyframes sparkBlink {
+  0%, 100% { opacity: 0; }
+  42% { opacity: .42; }
+  62% { opacity: .16; }
+}
+.hero-spark-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--faint);
+}
+.hero-spark-state .spark-live-dot,
+.spark-live-dot {
+  display: inline-block;
+  width: 4.5px;
+  height: 4.5px;
+  border-radius: 50%;
+  background: var(--up);
+  box-shadow: 0 0 0 0 var(--up-soft);
+  animation: livePulse 1.8s var(--ease-out) infinite;
+}
+@keyframes livePulse {
+  0% { opacity: .5; transform: scale(.85); }
+  45% { opacity: 1; transform: scale(1); }
+  100% { opacity: .55; transform: scale(.85); }
+}
+.hero-spark-axis { position: relative; }
+.hero-axis-now {
+  position: absolute;
+  top: -9px;
+  transform: translateX(-50%);
+  color: var(--brass);
+  font-size: 7px;
+  letter-spacing: 0;
+  opacity: .85;
+  white-space: nowrap;
+}
+@media (prefers-reduced-motion: reduce) {
+  .spark-pulse, .spark-live-dot { animation: none; }
+  .spark-pulse { display: none; }
+}
+
 .stock-card.compact {
   width: 184px;
   min-height: 61px;
@@ -2156,6 +2216,13 @@ select.select option { background: var(--surface); color: var(--text); }
 .ladder.is-entering .stock-card {
   animation: tierIn .5s var(--ease-out) both;
   animation-delay: calc(var(--tier) * 46ms + 40ms);
+}
+/* Silent refreshes rebuild the ladder DOM; the `no-anim` view class has to
+   reach the tier/card children too, otherwise the entrance replay returns
+   once per minute. */
+.view.no-anim .ladder-tier,
+.view.no-anim .stock-card {
+  animation: none !important;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -3472,6 +3539,33 @@ input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
 .chart-range-dd .dd-trigger .icon { width: 10px; height: 10px; }
 .ts-axis-modes { margin-left: 1px; }
 .ts-axis-modes button { min-width: 36px; padding: 0 8px; font-size: 9px; }
+.ts-y-modes { margin-left: 1px; }
+.ts-y-modes button { min-width: 30px; padding: 0 7px; font-size: 9px; }
+.ts-y-readout {
+  min-width: 36px;
+  font-family: var(--mono);
+  font-size: 8px;
+  color: var(--faint);
+  letter-spacing: .02em;
+  text-align: center;
+}
+.ts-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--up);
+  font-family: var(--mono);
+  font-size: 8.5px;
+}
+.ts-live i {
+  width: 4.5px;
+  height: 4.5px;
+  border-radius: 50%;
+  background: var(--up);
+  animation: livePulse 1.8s var(--ease-out) infinite;
+}
+.ts-live.is-closed { color: var(--faint); }
+.ts-live.is-closed i { background: var(--faint); animation: none; }
 .chart-toolbar-controls { overscroll-behavior-x: contain; }
 .chart-toolbar-controls.is-scrollable {
   -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent);

@@ -17,6 +17,15 @@ fn err(e: anyhow::Error) -> String {
     format!("{e:#}")
 }
 
+/// Called by the frontend as soon as the application shell is mounted. This
+/// retires the native splash window and reveals the already-rendered main
+/// window, so startup never shows a bare black webview.
+#[tauri::command]
+pub async fn app_ready(app: tauri::AppHandle) -> Result<(), String> {
+    crate::reveal_main(&app);
+    Ok(())
+}
+
 fn state_conn(state: &AppState) -> Result<rusqlite::Connection, String> {
     db::connect(&state.db_path).map_err(|e| err(e))
 }

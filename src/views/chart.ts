@@ -83,6 +83,7 @@ interface IntradaySnapshot {
   amount: number;
   turnover: number;
   avg: number;
+  hasAvg: boolean;
 }
 
 function intradaySnapshot(candles: KlineCandle[], prevClose?: number | null): IntradaySnapshot | null {
@@ -99,7 +100,10 @@ function intradaySnapshot(candles: KlineCandle[], prevClose?: number | null): In
   const amount = rows.reduce((sum, r) => sum + r.amount, 0);
   const turnover = rows.reduce((sum, r) => sum + r.turnover, 0);
   const volume = rows.reduce((sum, r) => sum + r.volume, 0);
-  const avg = volume > 0 ? amount / (volume * 100) : last.close;
+  const rawAvg = volume > 0 ? amount / (volume * 100) : 0;
+  // 指数没有「每股均价」；个股也防止异常成交字段把读数拉飞。
+  const hasAvg = rawAvg > 0 && last.close > 0 && Math.abs(rawAvg / last.close - 1) < 0.35;
+  const avg = hasAvg ? rawAvg : last.close;
   return {
     rows,
     base,
@@ -110,6 +114,7 @@ function intradaySnapshot(candles: KlineCandle[], prevClose?: number | null): In
     amount,
     turnover,
     avg,
+    hasAvg,
   };
 }
 
@@ -166,7 +171,7 @@ export function renderChartView(): string {
             ${state.chartLoading ? `<div class="chart-loading"><span class="loader"></span><span>正在刷新 ${state.chartMode === "timeshare" ? "分时" : esc(PERIOD_LABEL[state.chartPeriod] || "K线")}</span></div>` : ""}
             ${state.chartError ? `<div class="chart-error"><div class="error-title">K线没有加载</div><span>${esc(state.chartError)}</span><button class="chart-retry" data-action="chart-retry">重新加载</button></div>` : ""}
           </div>
-          <div class="chart-footnote"><span>东方财富 · ${state.chartMode === "timeshare" ? "分时" : "前复权"}${stock.kind === "index" ? " · 指数" : ""}</span><span>${state.chartMode === "timeshare" ? "价格 · 日内均价" : esc(indicatorSummary(state.chartPrefs))}</span></div>
+          <div class="chart-footnote"><span>东方财富 · ${state.chartMode === "timeshare" ? "分时" : "前复权"}${stock.kind === "index" ? " · 指数" : ""}</span><span>${state.chartMode === "timeshare" ? (stock.kind === "index" ? "左轴 点数 · 右轴 百分比" : "左轴 价格 · 右轴 百分比") : esc(indicatorSummary(state.chartPrefs))}</span></div>
         </div>
         ${renderChartDock()}
       </div>
@@ -252,7 +257,7 @@ export function renderChartHead(): string {
         <div class="snapshot-item"><span class="snapshot-label">最高</span><span class="snapshot-value">${fmtPrice(dayHigh)}</span></div>
         <div class="snapshot-item"><span class="snapshot-label">最低</span><span class="snapshot-value">${fmtPrice(dayLow)}</span></div>
         <div class="snapshot-item"><span class="snapshot-label">成交额</span><span class="snapshot-value">${fmtAmount(dayAmount)}</span></div>
-        <div class="snapshot-item"><span class="snapshot-label">${intraday ? "均价" : "换手"}</span><span class="snapshot-value">${intraday ? fmtPrice(intraday.avg) : `${dayTurnover.toFixed(2)}%`}</span></div>
+        <div class="snapshot-item"><span class="snapshot-label">${intraday ? (stock.kind === "index" || !intraday.hasAvg ? "昨收" : "均价") : "换手"}</span><span class="snapshot-value">${intraday ? fmtPrice(stock.kind === "index" || !intraday.hasAvg ? intraday.base : intraday.avg) : `${dayTurnover.toFixed(2)}%`}</span></div>
       </div>`
     : "";
 
@@ -265,7 +270,7 @@ export function renderChartHead(): string {
       </div>
       <div class="chart-meta">
         <span>${state.chartMode === "timeshare" ? "分时" : PERIOD_LABEL[state.chartPeriod]}</span><span class="meta-dot"></span>
-        <span>${stock.kind === "index" ? "指数" : state.chartMode === "timeshare" ? "日内均价" : "前复权"}</span><span class="meta-dot"></span>
+        <span>${stock.kind === "index" ? (state.chartMode === "timeshare" ? "指数 · 双轴" : "指数") : state.chartMode === "timeshare" ? "日内均价" : "前复权"}</span><span class="meta-dot"></span>
         <span>截至 ${dateLabel}</span>
         ${live ? `<span class="meta-dot"></span><span class="live-tag">${live.stale ? "缓存" : "实时"}</span>` : data?.source === "cache" ? `<span class="meta-dot"></span><span class="cache-tag">本地缓存</span>` : ""}
       </div>
@@ -312,7 +317,13 @@ export function renderChartToolbar(): string {
       <button class="${state.timeshareAxis === "full" ? "active" : ""}" data-timeshare-axis="full">全天</button>
       <button class="${state.timeshareAxis === "follow" ? "active" : ""}" data-timeshare-axis="follow">跟随</button>
     </div>
-    <span class="chart-timeshare-chip">日内走势 · 均价线</span>`}
+    <div class="seg ts-y-modes" role="group" aria-label="分时纵轴刻度间距">
+      <button class="${Math.abs(state.timeshareZoom - 1) < 0.001 ? "active" : ""}" data-timeshare-y="auto" title="自动适配纵轴（双击图表也可恢复）">自动</button>
+      <button class="${state.timeshareZoom < 0.999 ? "active" : ""}" data-timeshare-y="sparse" title="刻度间距更大，刻度更疏">疏</button>
+      <button class="${state.timeshareZoom > 1.001 ? "active" : ""}" data-timeshare-y="dense" title="刻度间距更小，刻度更密">密</button>
+    </div>
+    <span class="ts-y-readout" title="纵轴刻度倍率；在左右坐标轴上滚动滚轮也可调整">×${state.timeshareZoom.toFixed(2)}</span>
+    <span class="chart-timeshare-chip" title="${state.chartStock?.kind === "index" ? "左轴点数 · 右轴百分比" : "左轴价格 · 右轴百分比"}">双轴</span>`}
   </div>
   <div class="chart-toolbar-actions">
     ${state.chartStock?.kind === "stock" ? renderChartSwitchAction() : ""}
@@ -341,7 +352,7 @@ function renderPerf(): string {
       <div class="perf-item"><span class="perf-label">日内涨幅</span><span class="perf-value text-${tone(intraday.pct)}">${fmtPct(intraday.pct)}</span></div>
       <div class="perf-item"><span class="perf-label">振幅</span><span class="perf-value">${amplitude.toFixed(2)}%</span></div>
       <div class="perf-item"><span class="perf-label">成交额</span><span class="perf-value">${fmtAmount(intraday.amount)}</span></div>
-      <div class="perf-item"><span class="perf-label">均价</span><span class="perf-value">${fmtPrice(intraday.avg)}</span></div>
+      <div class="perf-item"><span class="perf-label">${state.chartStock?.kind === "index" || !intraday.hasAvg ? "昨收" : "均价"}</span><span class="perf-value">${fmtPrice(state.chartStock?.kind === "index" || !intraday.hasAvg ? intraday.base : intraday.avg)}</span></div>
     </div>`;
   }
   const st = stats(candles);

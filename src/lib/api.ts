@@ -38,6 +38,7 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
 }
 
 export const api = {
+  appReady: () => call<void>("app_ready"),
   getCalendar: (refresh = false) => call<CalendarInfo>("get_calendar", { refresh }),
   getDay: (date: string, refresh = false) => call<DayPayload>("get_day", { date, refresh }),
   getKline: (code: string, period: Period, refresh = false) =>

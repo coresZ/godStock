@@ -9,9 +9,111 @@
     <link rel="preload" href="/fonts/noto-serif-sc.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="preload" href="/fonts/fraunces-latin.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="preload" href="/fonts/plexmono-400.woff2" as="font" type="font/woff2" crossorigin />
+    <script>
+      // Paint the correct paper/ink before any bundle is parsed. The value is
+      // mirrored to localStorage by the app; the database remains the source
+      // of truth once the shell is up.
+      try {
+        var savedTheme = localStorage.getItem("tianti.theme");
+        if (savedTheme === "light" || savedTheme === "dark") document.documentElement.dataset.theme = savedTheme;
+      } catch (error) {
+        /* first run in a locked-down webview */
+      }
+    </script>
+    <style>
+      :root {
+        color-scheme: dark;
+        --boot-bg: #0b0c0f;
+        --boot-text: #e9e3d7;
+        --boot-strong: #f4eee2;
+        --boot-faint: #7b7f88;
+        --boot-line: rgba(233, 227, 215, .16);
+        --boot-brass: #c6a15b;
+      }
+      html[data-theme="light"] {
+        color-scheme: light;
+        --boot-bg: #f2ede3;
+        --boot-text: #1d1b17;
+        --boot-strong: #11100e;
+        --boot-faint: #7c7569;
+        --boot-line: rgba(29, 27, 23, .2);
+        --boot-brass: #8c6a2f;
+      }
+      html, body { height: 100%; }
+      body {
+        margin: 0;
+        background: var(--boot-bg);
+        color: var(--boot-text);
+        font-family: "Noto Sans SC", "Microsoft YaHei UI", sans-serif;
+      }
+      #app { height: 100%; }
+      .boot {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        background: var(--boot-bg);
+        color: var(--boot-text);
+      }
+      .boot-mark { width: 46px; height: 46px; opacity: .92; }
+      .boot-word {
+        margin-top: 19px;
+        font-family: "Noto Serif SC", "Songti SC", "SimSun", serif;
+        font-size: 25px;
+        font-weight: 600;
+        letter-spacing: .35em;
+        padding-left: .35em;
+        color: var(--boot-strong);
+      }
+      .boot-sub {
+        margin-top: 7px;
+        color: var(--boot-faint);
+        font-size: 9px;
+        letter-spacing: .22em;
+        padding-left: .22em;
+      }
+      .boot-line {
+        width: 78px;
+        height: 1px;
+        margin-top: 26px;
+        background: var(--boot-line);
+        overflow: hidden;
+      }
+      .boot-line span {
+        display: block;
+        width: 36%;
+        height: 100%;
+        background: var(--boot-brass);
+        animation: bootSlide 1.2s cubic-bezier(.22, .8, .28, 1) infinite;
+      }
+      .boot-status {
+        margin-top: 11px;
+        color: var(--boot-faint);
+        font-size: 8.5px;
+        letter-spacing: .16em;
+        opacity: .8;
+      }
+      @keyframes bootSlide {
+        from { transform: translateX(-110%); }
+        to { transform: translateX(280%); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .boot-line span { animation: none; width: 100%; opacity: .45; }
+      }
+    </style>
   </head>
   <body>
-    <div id="app"></div>
+    <div id="app">
+      <div class="boot" id="boot">
+        <img src="./mark.svg" alt="" class="boot-mark" />
+        <div class="boot-word">天梯</div>
+        <div class="boot-sub">A股涨停复盘</div>
+        <div class="boot-line"><span></span></div>
+        <div class="boot-status">正在唤醒行情</div>
+      </div>
+    </div>
+    <noscript><div style="padding: 32px; color: #e9e3d7">天梯需要启用 JavaScript 才能运行。</div></noscript>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

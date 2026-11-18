@@ -18,6 +18,9 @@ let dayToken = 0;
 let chartToken = 0;
 let indicesLoading = false;
 let watchQuoteLoading = false;
+let timeshareRefreshing = false;
+let lastDayAutoRefresh = 0;
+let lastChartAutoRefresh = 0;
 let overlayKind:
   | "search"
   | "settings"
@@ -36,21 +39,54 @@ let searchTimer: number | undefined;
 let booted = false;
 
 const localToday = (): string => {
-  const d = new Date();
-  return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
+  // Exchange date is UTC+8; never derive it from the machine timezone.
+  const d = new Date(Date.now() + 8 * 3600 * 1000);
+  return `${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, "0")}${String(d.getUTCDate()).padStart(2, "0")}`;
 };
 
 /* ————————————————— boot ————————————————— */
 
 function boot(): void {
   const app = document.getElementById("app")!;
-  app.innerHTML = `<div class="boot">
-    <img src="./mark.svg" alt="" class="boot-mark" />
-    <div class="boot-word">天梯</div>
-    <div class="boot-sub">A股涨停复盘</div>
-    <div class="boot-line"><span></span></div>
-  </div>`;
+  // index.html ships a static boot card so the first paint is branded even
+  // before this module is parsed. Only synthesize one when running from a bare
+  // document (tests, older shells).
+  if (!app.querySelector(".boot")) {
+    app.innerHTML = `<div class="boot">
+      <img src="./mark.svg" alt="" class="boot-mark" />
+      <div class="boot-word">天梯</div>
+      <div class="boot-sub">A股涨停复盘</div>
+      <div class="boot-line"><span></span></div>
+    </div>`;
+  }
+  // The native splash retires when the shell is mounted; the timeout is a
+  // last-resort escape hatch if start() fails before renderShell().
+  window.setTimeout(notifyReady, 9000);
   void start();
+}
+
+function notifyReady(): void {
+  void api.appReady().catch(() => {
+    /* browser preview has no native splash */
+  });
+}
+
+function nextPaint(): Promise<void> {
+  return new Promise<void>((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      resolve();
+    };
+    try {
+      requestAnimationFrame(() => requestAnimationFrame(finish));
+    } catch {
+      /* ignore */
+    }
+    // WebView2 may throttle rAF while a window is occluded by the splash.
+    window.setTimeout(finish, 280);
+  });
 }
 
 async function start(): Promise<void> {
@@ -65,7 +101,7 @@ async function start(): Promise<void> {
   try {
     await api.setUiScale(state.uiScale);
     // WebView2 的缩放会在下一帧才反映到布局宽度，等一次重排再挂载界面。
-    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    await nextPaint();
   } catch {
     /* browser preview has no native zoom */
   }
@@ -102,13 +138,15 @@ async function start(): Promise<void> {
   bindGlobals();
   window.addEventListener("resize", syncToolbarOverflow);
   booted = true;
+  window.setTimeout(notifyReady, 60);
 
   void loadIndices(true);
   window.setInterval(() => {
     if (document.hidden) return;
     void loadIndices(true);
-    if (state.view === "chart" && state.chartStock?.kind === "index") void loadChartQuote(chartToken);
+    if (state.view === "chart" && state.chartStock) void loadChartQuote(chartToken);
     void refreshWatchQuotes();
+    autoRefreshTick();
   }, 20000);
   await ensureCalendar();
   if (state.date) await loadDay(state.date, true);
@@ -144,6 +182,11 @@ function renderShell(): void {
 function applyTheme(theme: Theme, persist = true): void {
   state.theme = theme;
   document.documentElement.dataset.theme = theme;
+  try {
+    localStorage.setItem("tianti.theme", theme);
+  } catch {
+    /* storage is optional */
+  }
   if (persist) {
     void api.setTheme(theme).catch(() => toast("主题偏好未能保存", "error"));
   }
@@ -268,11 +311,13 @@ async function loadDay(date: string, initial = false): Promise<void> {
 async function refreshDay(date: string, token: number, quiet = false): Promise<void> {
   if (state.refreshing) return;
   state.refreshing = true;
-  state.sync = "loading";
-  updateChrome();
-  document.querySelectorAll<HTMLElement>(".section-note").forEach((el) => {
-    el.innerHTML = `${icon("refresh", 13)}同步中`;
-  });
+  if (!quiet) {
+    state.sync = "loading";
+    updateChrome();
+    document.querySelectorAll<HTMLElement>(".section-note").forEach((el) => {
+      el.innerHTML = `${icon("refresh", 13)}同步中`;
+    });
+  }
   try {
     const day = await api.getDay(date, true);
     if (token !== dayToken) {
@@ -285,7 +330,8 @@ async function refreshDay(date: string, token: number, quiet = false): Promise<v
     state.sync = day.warning ? "cache" : "live";
     state.lastSyncAt = day.fetchedAt;
     state.refreshing = false;
-    renderMain();
+    // Background refresh must not replay the ladder entrance choreography.
+    renderMain({ animate: false });
     updateChrome();
     if (day.warning && !quiet) toast(day.warning, "error");
   } catch (e) {
@@ -440,8 +486,98 @@ function persistChartViewPrefs(): void {
   try {
     localStorage.setItem("tianti.chartRanges", JSON.stringify(state.chartRanges));
     localStorage.setItem("tianti.timeshareAxis", state.timeshareAxis);
+    localStorage.setItem("tianti.timeshareZoom", String(state.timeshareZoom));
   } catch {
     // Preferences are optional; ignore storage failures.
+  }
+}
+
+function applyTimeshareZoom(value: number): void {
+  state.timeshareZoom = Math.max(0.55, Math.min(2.2, Number.isFinite(value) ? value : 1));
+  timeShareChart?.setYScale(state.timeshareZoom);
+  persistChartViewPrefs();
+  updateTimeshareToolbarDom();
+}
+
+function updateTimeshareToolbarDom(): void {
+  document.querySelectorAll<HTMLElement>("[data-timeshare-y]").forEach((button) => {
+    const mode = button.dataset.timeshareY;
+    const active =
+      (mode === "auto" && Math.abs(state.timeshareZoom - 1) < 0.001) ||
+      (mode === "sparse" && state.timeshareZoom < 0.999) ||
+      (mode === "dense" && state.timeshareZoom > 1.001);
+    button.classList.toggle("active", active);
+  });
+  const readout = document.querySelector<HTMLElement>(".ts-y-readout");
+  if (readout) readout.textContent = `×${state.timeshareZoom.toFixed(2)}`;
+}
+
+function marketSessionOpen(): boolean {
+  if (state.calendar && state.calendar.isTradeDay === false) return false;
+  const now = new Date(Date.now() + 8 * 3600 * 1000);
+  const weekday = now.getUTCDay();
+  if (weekday === 0 || weekday === 6) return false;
+  const clock = now.getUTCHours() * 60 + now.getUTCMinutes();
+  const lunchBreak = clock > 11 * 60 + 30 && clock < 13 * 60;
+  return clock >= 9 * 60 + 15 && clock <= 15 * 60 && !lunchBreak;
+}
+
+/**
+ * During the session the ladder pool is re-pulled quietly every minute: the
+ * `time_preview` series grows and the aggregate stats change as new stocks seal.
+ * The timeshare plot is refreshed on its own 1-minute feed every 30 seconds so
+ * the pulsing latest point keeps moving.
+ */
+function autoRefreshTick(): void {
+  const now = Date.now();
+  const isToday = Boolean(state.date && state.calendar?.today === state.date);
+  if (
+    isToday &&
+    state.view !== "chart" &&
+    marketSessionOpen() &&
+    !state.refreshing &&
+    now - lastDayAutoRefresh > 60000
+  ) {
+    lastDayAutoRefresh = now;
+    void refreshDay(state.date, dayToken, true);
+  }
+  if (
+    state.view === "chart" &&
+    state.chartMode === "timeshare" &&
+    state.chartStock &&
+    !state.chartLoading &&
+    marketSessionOpen() &&
+    now - lastChartAutoRefresh > 30000
+  ) {
+    lastChartAutoRefresh = now;
+    void refreshTimeShare(chartToken);
+  }
+}
+
+async function refreshTimeShare(token: number): Promise<void> {
+  if (timeshareRefreshing) return;
+  const stock = state.chartStock;
+  if (!stock) return;
+  timeshareRefreshing = true;
+  try {
+    const data = await fetchChartData("1m", true);
+    if (token !== chartToken || state.view !== "chart" || state.chartMode !== "timeshare" || !state.chartStock) return;
+    state.chartData = data;
+    state.chartError = null;
+    state.chartLoading = false;
+    if (!state.chartStock.name && data.name) state.chartStock.name = data.name;
+    if (timeShareChart) {
+      timeShareChart.setData(data.candles, state.chartQuote?.prevClose ?? data.prevClose);
+      updateChartHeadDom();
+    } else {
+      // The first 1m request failed before the canvas existed; mount it now
+      // instead of leaving an empty stage with an error card until a manual retry.
+      renderMain({ animate: false });
+    }
+  } catch {
+    /* keep the last plot; the next tick retries */
+  } finally {
+    timeshareRefreshing = false;
   }
 }
 
@@ -553,7 +689,17 @@ function mountChart(): void {
   if (!stage || !state.chartData) return;
   if (state.chartMode === "timeshare") {
     if (state.chartPeriod !== "1m" || state.chartData.period !== "1m") return;
-    timeShareChart = new TimeShareChart(stage, state.timeshareAxis);
+    const stock = state.chartStock;
+    timeShareChart = new TimeShareChart(stage, {
+      axisMode: state.timeshareAxis,
+      yScale: state.timeshareZoom,
+      kind: stock?.kind === "index" ? "index" : "stock",
+      onYScaleChange: (value) => {
+        state.timeshareZoom = value;
+        persistChartViewPrefs();
+        updateTimeshareToolbarDom();
+      },
+    });
     timeShareChart.setData(state.chartData.candles, state.chartQuote?.prevClose ?? state.chartData.prevClose);
     return;
   }
@@ -741,6 +887,14 @@ function handleClick(e: MouseEvent): void {
     document.querySelectorAll<HTMLElement>("[data-timeshare-axis]").forEach((el) => {
       el.classList.toggle("active", el.dataset.timeshareAxis === mode);
     });
+    return;
+  }
+  const yBtn = target.closest<HTMLElement>("[data-timeshare-y]");
+  if (yBtn) {
+    const mode = yBtn.dataset.timeshareY;
+    if (mode === "auto") applyTimeshareZoom(1);
+    else if (mode === "sparse") applyTimeshareZoom(state.timeshareZoom * 0.8);
+    else if (mode === "dense") applyTimeshareZoom(state.timeshareZoom * 1.25);
     return;
   }
   const modeBtn = target.closest<HTMLElement>('[data-chart-mode="timeshare"]');

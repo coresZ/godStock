@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
-use chrono::{Local, TimeZone};
+use chrono::{FixedOffset, Local, TimeZone, Timelike};
 use encoding_rs::GBK;
 use reqwest::Client;
 use serde_json::Value;
@@ -147,6 +147,130 @@ fn is_date(s: &str) -> bool {
     s.len() == 8 && s.chars().all(|c| c.is_ascii_digit())
 }
 
+/// `time_preview` is a three-minute intraday percent series. Today's feed grows
+/// during the session, but mirrors can also answer with a complete 80-point
+/// series (or with the previous day's series right after the open). Trimming to
+/// the number of samples that can possibly exist at `fetched_at` keeps the
+/// ladder sparkline honest: it can never "finish" the day at 15:00 while the
+/// market is still trading.
+fn expected_spark_points(date: &str, fetched_at: i64) -> usize {
+    if date != db::today_ymd() {
+        return 80;
+    }
+    // The market clock is fixed at UTC+8 regardless of the machine timezone,
+    // matching `db::today_ymd`; using `Local` here would zero today's series on
+    // a non-China machine and persist that empty payload.
+    let Some(tz) = FixedOffset::east_opt(8 * 3600) else {
+        return 80;
+    };
+    let Some(now) = tz.timestamp_opt(fetched_at, 0).single() else {
+        return 80;
+    };
+    let clock = now.hour() as i64 * 60 + now.minute() as i64;
+    if clock < 9 * 60 + 30 {
+        return 0;
+    }
+    let elapsed = if clock <= 11 * 60 + 30 {
+        clock - (9 * 60 + 30)
+    } else if clock < 13 * 60 {
+        120
+    } else if clock <= 15 * 60 {
+        120 + (clock - 13 * 60)
+    } else {
+        240
+    };
+    ((elapsed / 3) + 1).clamp(0, 80) as usize
+}
+
+fn trim_spark(spark: &mut Vec<f64>, limit: usize) {
+    if spark.len() > limit {
+        spark.truncate(limit);
+    }
+}
+
+fn session_minute_of(date: &str) -> i64 {
+    let hour = date.get(11..13).and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
+    let minute = date.get(14..16).and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
+    let clock = hour * 60 + minute;
+    if clock <= 11 * 60 + 30 {
+        (clock - (9 * 60 + 30)).clamp(0, 120)
+    } else if clock >= 13 * 60 {
+        (120 + clock - 13 * 60).clamp(120, 240)
+    } else {
+        120
+    }
+}
+
+/// Rebuild a three-minute percent series from real one-minute candles. Used for
+/// the single highest-board card, where a stale `time_preview` would be most
+/// visible ("今天的 4 板还在走昨天的分时").
+fn spark_from_minute_candles(candles: &[KlineCandle], base: f64, limit: usize) -> Vec<f64> {
+    if base <= 0.0 || limit < 2 {
+        return Vec::new();
+    }
+    let points: Vec<(i64, f64)> = candles
+        .iter()
+        .filter(|candle| candle.close > 0.0)
+        .map(|candle| (session_minute_of(&candle.date), candle.close))
+        .collect();
+    let Some(&(last_minute, _)) = points.last() else {
+        return Vec::new();
+    };
+    let step = last_minute as f64 / (limit - 1) as f64;
+    let mut out = Vec::with_capacity(limit);
+    let mut cursor = 0usize;
+    for index in 0..limit {
+        let target = (index as f64 * step).round() as i64;
+        while cursor + 1 < points.len() && points[cursor + 1].0 <= target {
+            cursor += 1;
+        }
+        out.push((points[cursor].1 / base - 1.0) * 100.0);
+    }
+    out
+}
+
+/// The highest board is the visual focal point of the ladder. If it is unique
+/// and the day is today, rebuild its sparkline from the raw minute feed so it
+/// can never lag behind or show the previous session.
+async fn refresh_hero_spark(client: &Client, stocks: &mut [Stock], spark_limit: usize) {
+    let max_streak = stocks.iter().map(|s| s.streak).max().unwrap_or(0);
+    if max_streak < 2 {
+        return;
+    }
+    let tops: Vec<usize> = stocks
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.streak == max_streak)
+        .map(|(i, _)| i)
+        .collect();
+    if tops.len() != 1 {
+        return;
+    }
+    let index = tops[0];
+    let stock = &stocks[index];
+    let code = stock.code.clone();
+    let base = if stock.price > 0.0 && stock.change_rate.abs() > 0.5 {
+        stock.price / (1.0 + stock.change_rate / 100.0)
+    } else {
+        0.0
+    };
+    if base <= 0.0 {
+        return;
+    }
+    let Ok((_, minutes)) = fetch_tencent_minute_kline(client, &stock_symbol(&code)).await else {
+        return;
+    };
+    let today = db::today_ymd();
+    let prefix = format!("{}-{}-{}", &today[0..4], &today[4..6], &today[6..8]);
+    if !minutes.first().map(|c| c.date.starts_with(&prefix)).unwrap_or(false) {
+        return;
+    }
+    let series = spark_from_minute_candles(&minutes, base, spark_limit);
+    if series.len() > 3 {
+        stocks[index].spark = series;
+    }
+}
+
 pub async fn fetch_calendar(client: &Client, today: &str) -> Result<(bool, Vec<String>)> {
     let url = format!(
         "https://data.10jqka.com.cn/dataapi/limit_up/trade_day?stock=stock&prev=250&next=30&date={today}"
@@ -257,8 +381,13 @@ pub async fn fetch_day(client: &Client, date: &str) -> Result<(DayPayload, Optio
     if !is_date(date) {
         return Err(anyhow!("日期格式应为 YYYYMMDD"));
     }
+    let fetched_at = db::now_ts();
+    let spark_limit = expected_spark_points(date, fetched_at);
     let pool = fetch_pool(client, date, "limit_up_pool", "330324").await?;
     let mut warnings: Vec<String> = Vec::new();
+    if date == db::today_ymd() && spark_limit == 0 {
+        warnings.push("盘前数据可能仍为上一交易日，开盘后自动刷新".into());
+    }
     let open_pool = match fetch_pool(client, date, "open_limit_pool", "199112").await {
         Ok(v) => v,
         Err(e) => {
@@ -371,6 +500,7 @@ pub async fn fetch_day(client: &Client, date: &str) -> Result<(DayPayload, Optio
     }
 
     for st in &mut stocks {
+        trim_spark(&mut st.spark, spark_limit);
         if let Some(list) = sector_map.get(&st.code) {
             st.primary_sector = list.first().cloned();
             st.sectors = list.clone();
@@ -384,7 +514,14 @@ pub async fn fetch_day(client: &Client, date: &str) -> Result<(DayPayload, Optio
             .then(a.first_seal.cmp(&b.first_seal))
     });
 
+    if date == db::today_ymd() && spark_limit > 0 {
+        refresh_hero_spark(client, &mut stocks, spark_limit).await;
+    }
+
     let mut open_limit: Vec<Stock> = open_pool.iter().filter_map(|v| aux_stock(v)).collect();
+    for stock in &mut open_limit {
+        trim_spark(&mut stock.spark, spark_limit);
+    }
     open_limit.sort_by(|a, b| {
         b.change_rate
             .partial_cmp(&a.change_rate)
@@ -392,6 +529,9 @@ pub async fn fetch_day(client: &Client, date: &str) -> Result<(DayPayload, Optio
             .then(a.last_seal.cmp(&b.last_seal))
     });
     let mut limit_down: Vec<Stock> = down_pool.iter().filter_map(|v| aux_stock(v)).collect();
+    for stock in &mut limit_down {
+        trim_spark(&mut stock.spark, spark_limit);
+    }
     limit_down.sort_by(|a, b| {
         a.change_rate
             .partial_cmp(&b.change_rate)
@@ -439,7 +579,7 @@ pub async fn fetch_day(client: &Client, date: &str) -> Result<(DayPayload, Optio
         open_limit,
         limit_down,
         sectors,
-        fetched_at: db::now_ts(),
+        fetched_at,
         source: "network".into(),
         warning: warning.clone(),
     };

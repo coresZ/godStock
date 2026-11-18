@@ -73,18 +73,37 @@ jobs:
           $version = $tag.TrimStart("v")
           if ([string]::IsNullOrWhiteSpace($version)) { throw "Tag name is empty" }
 
+          $pkgVersion = (Get-Content "package.json" -Raw | ConvertFrom-Json).version
+          $tauriVersion = (Get-Content "src-tauri/tauri.conf.json" -Raw | ConvertFrom-Json).version
+          $cargoVersion = (Select-String -Path "src-tauri/Cargo.toml" -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          if ($pkgVersion -ne $version -or $tauriVersion -ne $version -or $cargoVersion -ne $version) {
+            throw "版本不一致：tag=$version package=$pkgVersion tauri=$tauriVersion cargo=$cargoVersion"
+          }
+
+          $notes = "release/RELEASE_NOTES-v$version.md"
+          if (-not (Test-Path $notes)) { throw "缺少发行说明：$notes" }
+
+          $stage = "release-stage"
           $package = "release-package"
-          New-Item -ItemType Directory -Force -Path $package | Out-Null
-          Copy-Item "src-tauri/target/release/tianti.exe" "$package/TianTi.exe" -Force
-          Copy-Item "README.md" "$package/README.md" -Force
-          Copy-Item "release/使用说明.txt" "$package/使用说明.txt" -Force
+          Remove-Item $stage, $package -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $stage, $package | Out-Null
+
+          Copy-Item "src-tauri/target/release/tianti.exe" "$stage/TianTi.exe" -Force
+          Copy-Item "README.md" "$stage/README.md" -Force
+          Copy-Item "release/DESIGN.md" "$stage/DESIGN.md" -Force
+          Copy-Item $notes "$stage/RELEASE_NOTES-v$version.md" -Force
+          Copy-Item "release/使用说明.txt" "$stage/使用说明.txt" -Force
+          Copy-Item "docs" "$stage/docs" -Recurse -Force
+          Copy-Item "$stage/TianTi.exe" "$package/TianTi.exe" -Force
 
           $zipName = "TianTi-v$version-win-x64.zip"
-          $zipPath = Join-Path $package $zipName
-          Compress-Archive -Path (Join-Path $package "*") -DestinationPath $zipPath -CompressionLevel Optimal -Force
+          $zipPath = Join-Path (Get-Location) $zipName
+          if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+          Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $zipPath -CompressionLevel Optimal -Force
+          Move-Item $zipPath (Join-Path $package $zipName) -Force
 
           $exeHash = (Get-FileHash "$package/TianTi.exe" -Algorithm SHA256).Hash.ToUpper()
-          $zipHash = (Get-FileHash $zipPath -Algorithm SHA256).Hash.ToUpper()
+          $zipHash = (Get-FileHash (Join-Path $package $zipName) -Algorithm SHA256).Hash.ToUpper()
           $utf8 = New-Object System.Text.UTF8Encoding($false)
           $sums = "$exeHash  TianTi.exe`r`n$zipHash  $zipName`r`n"
           [IO.File]::WriteAllText((Join-Path $package "SHA256SUMS.txt"), $sums, $utf8)

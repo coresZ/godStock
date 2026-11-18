@@ -1,13 +1,17 @@
-import { esc, fmtClock, fmtMoney, fmtPct, fmtPrice, icon, relTime, sparkline, tierName, tone } from "../lib/ui";
+import { esc, fmtClock, fmtMoney, fmtPct, fmtPrice, icon, intradaySparkline, relTime, tierName, tone } from "../lib/ui";
+import { sparkWindow, type SparkWindow } from "../lib/market";
 import { isToday, state } from "../lib/state";
 import type { Stock } from "../lib/types";
 import { emptyState, errorState, renderViewHead, warningBanner } from "./common";
 
-function stockCard(s: Stock, compact: boolean, index: number): string {
+function stockCard(s: Stock, compact: boolean, index: number, spark: SparkWindow): string {
   const pctCls = tone(s.changeRate);
   const primary = s.primarySector || s.sectors[0] || "";
   const pct = `<span class="card-pct text-${pctCls}">${fmtPct(s.changeRate)}</span>`;
-  const spark = !compact && s.spark.length > 2 ? sparkline(s.spark.slice(-64), 96, 32, "card-spark") : "";
+  const sparkSvg =
+    !compact && spark.samples.length > 2
+      ? intradaySparkline(spark.samples, { width: 96, height: 32, className: "card-spark", live: spark.live })
+      : "";
 
   if (compact) {
     const previous = s.board > s.streak ? s.highDays : "";
@@ -29,7 +33,7 @@ function stockCard(s: Stock, compact: boolean, index: number): string {
   const extra = s.highDays && s.highDays !== `${s.streak}板` ? s.highDays : s.limitType;
   const seal = s.sealAmount > 0 ? fmtMoney(s.sealAmount) : "—";
   return `<button class="stock-card" style="--i:${index}" data-stock-code="${s.code}" data-stock-name="${esc(s.name)}" aria-label="查看 ${esc(s.name)} K线">
-    ${spark}
+    ${sparkSvg}
     <div class="card-top">
       <span class="card-name">${esc(s.name)}</span>
       <span class="card-code">${s.code}</span>
@@ -51,18 +55,31 @@ function stockCard(s: Stock, compact: boolean, index: number): string {
   </button>`;
 }
 
-function heroCard(s: Stock): string {
+function heroCard(s: Stock, spark: SparkWindow): string {
   const primary = s.primarySector || s.sectors[0] || "—";
   const pctCls = tone(s.changeRate);
-  const limitAt = s.spark.findIndex((v) => v >= (s.changeRate >= 19 ? 19.5 : 9.7));
+  const limitAt = spark.samples.findIndex((v) => v >= (s.changeRate >= 19 ? 19.5 : 9.7));
+  const sealLeft = limitAt > 1 ? (limitAt * 3 * 100) / 240 : 0;
   const sealMark =
-    limitAt > 1 && limitAt < s.spark.length - 1
-      ? `<span class="hero-seal-mark" style="left:${((limitAt / Math.max(1, s.spark.length - 1)) * 100).toFixed(2)}%"><i>封板</i></span>`
+    limitAt > 1 && limitAt < spark.samples.length - 1
+      ? `<span class="hero-seal-mark" style="left:${sealLeft.toFixed(2)}%"><i>封板</i></span>`
       : "";
-  const spark =
-    s.spark.length > 2
-      ? `<div class="hero-spark">${sparkline(s.spark, 320, 72)}${sealMark}</div>
-         <div class="hero-spark-axis"><span>09:30</span><span>11:30</span><span>15:00</span></div>`
+  const endPct = spark.samples.length ? Math.min(100, (spark.samples.length - 1) * 3 * 100 / 240) : 0;
+  const liveLabel =
+    spark.phase === "live"
+      ? `<i class="spark-live-dot"></i>盘中 ${spark.endClock}`
+      : spark.phase === "lunch"
+        ? "午间休市"
+        : spark.phase === "pre"
+          ? "待开盘"
+          : "已收盘";
+  const sparkHtml =
+    spark.samples.length > 2
+      ? `<div class="hero-spark">${intradaySparkline(spark.samples, { width: 320, height: 72, live: spark.live, showNow: true })}${sealMark}</div>
+         <div class="hero-spark-axis">
+           <span>09:30</span><span>11:30</span><span>15:00</span>
+           ${spark.live && endPct > 12 && endPct < 90 ? `<span class="hero-axis-now" style="left:${endPct.toFixed(2)}%">${spark.endClock}</span>` : ""}
+         </div>`
       : "";
   return `<button class="stock-card hero" data-stock-code="${s.code}" data-stock-name="${esc(s.name)}" aria-label="查看 ${esc(s.name)} K线">
     <div class="hero-copy">
@@ -86,8 +103,8 @@ function heroCard(s: Stock): string {
     </div>
     <div class="hero-visual">
       ${
-        spark
-          ? `<div class="hero-spark-head"><span>分时走势</span><span>${s.limitType || "换手板"}</span></div>${spark}`
+        sparkHtml
+          ? `<div class="hero-spark-head"><span>分时走势</span><span class="hero-spark-state">${liveLabel}${s.limitType ? ` · ${esc(s.limitType)}` : ""}</span></div>${sparkHtml}`
           : `<div class="hero-empty">${esc(s.limitType || "涨停")} · ${esc(s.highDays)}</div>`
       }
       <div class="hero-visual-foot"><span>查看 K 线 ${icon("arrowUpRight", 12)}</span><span>${esc(s.highDays)}</span></div>
@@ -256,7 +273,7 @@ export function renderLadder(): string {
             <span class="tier-count">${ordered.length}</span>
           </div>
           <div class="tier-cards">
-            ${ordered.map((s, idx) => (useHero ? heroCard(s) : stockCard(s, compact, idx))).join("")}
+            ${ordered.map((s, idx) => (useHero ? heroCard(s, sparkWindow(s, day.date, day.fetchedAt)) : stockCard(s, compact, idx, sparkWindow(s, day.date, day.fetchedAt)))).join("")}
           </div>
         </section>`;
       })

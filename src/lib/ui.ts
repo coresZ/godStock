@@ -200,6 +200,65 @@ export function sparkline(
   return `<svg class="spark ${cls} ${className}" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-hidden="true"><path class="spark-area" d="${area}"/><polyline class="spark-line" points="${points.join(" ")}"/></svg>`;
 }
 
+export interface IntradaySparkOptions {
+  width?: number;
+  height?: number;
+  className?: string;
+  /** Minutes represented by one sample (3 for the ladder's time_preview feed). */
+  sampleMinutes?: number;
+  /** Total trading minutes of a session (A-share: 240). */
+  sessionMinutes?: number;
+  /** Price direction for tinting (for percentage series the last value is used). */
+  direction?: number;
+  /** Draw the pulsing "latest point" dot. */
+  live?: boolean;
+  /** Draw a faint vertical marker at the last sample. */
+  showNow?: boolean;
+}
+
+/**
+ * Intraday sparkline that respects the real clock instead of stretching the
+ * available samples across the whole width. At 13:30 the line stops at 62.5%
+ * of the plot, which makes it obvious that the trading day is still running.
+ */
+export function intradaySparkline(values: number[], opts: IntradaySparkOptions = {}): string {
+  const data = values.filter((v) => Number.isFinite(v));
+  if (!data.length) return "";
+  const width = opts.width ?? 96;
+  const height = opts.height ?? 30;
+  const sampleMinutes = Math.max(1, opts.sampleMinutes ?? 3);
+  const sessionMinutes = Math.max(1, opts.sessionMinutes ?? 240);
+  let min = Math.min(...data);
+  let max = Math.max(...data);
+  const mid = (min + max) / 2;
+  const minSpan = Math.max(Math.abs(mid) * 0.0012, 0.02);
+  if (max - min < minSpan) {
+    min = mid - minSpan / 2;
+    max = mid + minSpan / 2;
+  }
+  const span = max - min || 1;
+  const n = data.length;
+  const xAt = (index: number) => Math.min(width, (index * sampleMinutes * width) / sessionMinutes);
+  const yAt = (value: number) => height - 3 - ((value - min) / span) * (height - 6);
+  const points = data.map((value, index) => `${xAt(index).toFixed(2)},${yAt(value).toFixed(2)}`);
+  const lastX = xAt(n - 1);
+  const lastY = yAt(data[n - 1]);
+  const area = `M0,${height} L${points.join(" L")} L${lastX.toFixed(2)},${height} Z`;
+  const last = opts.direction ?? data[n - 1];
+  const cls = last > 0.1 ? "spark-up" : last < -0.1 ? "spark-down" : "spark-flat";
+  const now = opts.showNow
+    ? `<line class="spark-now" x1="${lastX.toFixed(2)}" y1="1" x2="${lastX.toFixed(2)}" y2="${height - 2}" />`
+    : "";
+  const dot = `<circle class="spark-dot" cx="${lastX.toFixed(2)}" cy="${lastY.toFixed(2)}" r="${opts.live ? 2.2 : 1.5}" />`;
+  const pulse = opts.live
+    ? `<circle class="spark-pulse" cx="${lastX.toFixed(2)}" cy="${lastY.toFixed(2)}" r="2.4" />`
+    : "";
+  return `<svg class="spark intraday-spark ${cls} ${opts.className ?? ""}" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-hidden="true">
+    <path class="spark-area" d="${area}"/><polyline class="spark-line" points="${points.join(" ")}"/>${now}${pulse}${dot}
+  </svg>`;
+}
+
+
 export function debounce<T extends (...args: never[]) => void>(fn: T, wait: number): T {
   let t: number | undefined;
   return ((...args: never[]) => {

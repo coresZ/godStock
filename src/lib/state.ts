@@ -45,6 +45,7 @@ export interface AppState {
   chartMode: "kline" | "timeshare";
   chartRanges: Record<Period, number>;
   timeshareAxis: "full" | "follow";
+  timeshareZoom: number;
   chartData: KlinePayload | null;
   chartQuote: StockQuote | null;
   watchQuotes: Record<string, StockQuote>;
@@ -103,6 +104,17 @@ function loadTimeshareAxis(): "full" | "follow" {
   }
 }
 
+function loadTimeshareZoom(): number {
+  try {
+    const raw = localStorage.getItem("tianti.timeshareZoom");
+    if (raw == null || raw === "") return 1;
+    const value = Number(raw);
+    return Number.isFinite(value) ? Math.max(0.55, Math.min(2.2, value)) : 1;
+  } catch {
+    return 1;
+  }
+}
+
 const initialChartRanges = loadChartRanges();
 
 export const state: AppState = {
@@ -122,6 +134,7 @@ export const state: AppState = {
   chartMode: "kline",
   chartRanges: initialChartRanges,
   timeshareAxis: loadTimeshareAxis(),
+  timeshareZoom: loadTimeshareZoom(),
   chartData: null,
   chartQuote: null,
   watchQuotes: {},
