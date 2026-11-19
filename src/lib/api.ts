@@ -1,14 +1,18 @@
 import type {
+  AuctionResult,
   CalendarInfo,
   ChartPrefs,
   DataInfo,
   DayPayload,
+  HistoryStatus,
   IndexQuote,
   KlinePayload,
   StockQuote,
   Period,
+  ScreenResult,
   SearchItem,
   Settings,
+  StrategyProfile,
   Theme,
   WatchAddResult,
   WatchGroup,
@@ -41,10 +45,22 @@ export const api = {
   appReady: () => call<void>("app_ready"),
   getCalendar: (refresh = false) => call<CalendarInfo>("get_calendar", { refresh }),
   getDay: (date: string, refresh = false) => call<DayPayload>("get_day", { date, refresh }),
-  getKline: (code: string, period: Period, refresh = false) =>
-    call<KlinePayload>("get_kline", { code, period, refresh }),
-  getIndexKline: (secid: string, name: string, period: Period, refresh = false) =>
-    call<KlinePayload>("get_index_kline", { secid, name, period, refresh }),
+  getKline: (code: string, period: Period, refresh = false, allowMinuteFallback = false) =>
+    call<KlinePayload>("get_kline", { code, period, refresh, allowMinuteFallback }),
+  getIndexKline: (
+    secid: string,
+    name: string,
+    period: Period,
+    refresh = false,
+    allowMinuteFallback = false,
+  ) =>
+    call<KlinePayload>("get_index_kline", {
+      secid,
+      name,
+      period,
+      refresh,
+      allowMinuteFallback,
+    }),
   getIndices: (refresh = false) => call<IndexQuote[]>("get_indices", { refresh }),
   getStockQuote: (code: string) => call<StockQuote>("get_stock_quote", { code }),
   getStockQuotes: (codes: string[]) => call<StockQuote[]>("get_stock_quotes", { codes }),
@@ -58,6 +74,16 @@ export const api = {
     call<string>("export_text", { filename, content }),
   getDataInfo: () => call<DataInfo>("get_data_info"),
   clearCache: () => call<void>("clear_cache"),
+  getHistoryStatus: () => call<HistoryStatus>("get_history_status"),
+  syncLimitHistory: (days: number, refresh = false) =>
+    call<HistoryStatus>("sync_limit_history", { days, refresh }),
+  getStrategyProfile: () => call<StrategyProfile>("get_strategy_profile"),
+  saveStrategyProfile: (profile: StrategyProfile) =>
+    call<StrategyProfile>("save_strategy_profile", { profile }),
+  runFirstToSecond: (date: string, refresh = false) =>
+    call<ScreenResult>("run_first_to_second", { date, refresh }),
+  captureAuction: (date: string) => call<AuctionResult>("capture_auction", { date }),
+  getAuction: (date: string) => call<AuctionResult>("get_auction", { date }),
   getWatchGroups: () => call<WatchGroup[]>("get_watch_groups"),
   createWatchGroup: (name: string) => call<number>("create_watch_group", { name }),
   renameWatchGroup: (id: number, name: string) => call<void>("rename_watch_group", { id, name }),

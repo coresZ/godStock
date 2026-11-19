@@ -24,6 +24,7 @@ pnpm build:exe:debug # 调试版 exe
 - 任何 TS/TSX 改动：`pnpm build` 必须通过（`tsc --noEmit` 严格模式，零报错）。
 - 涉及 Rust：`cargo check --manifest-path src-tauri/Cargo.toml` 通过；需要产物再跑 `pnpm build:exe`。
 - 涉及界面：在 `pnpm dev` 下自查深/浅两套主题 + 三档字号（102% / 110% / 118%）+ 1080×720 最小窗口。
+- 涉及策略面板：`pnpm build` + `cargo check` 都要过，并在 `pnpm dev` 下看 `#/strategy` 的深/浅主题与 1080×720。
 - 构建 exe 前必须关闭 `TianTi.exe`（构建脚本会主动检测并中止）。
 - 没有单元测试框架，不要声称"测试通过"；只写实际跑过的命令与结果。
 
@@ -32,14 +33,14 @@ pnpm build:exe:debug # 调试版 exe
 | 区域 | 文件 | 说明 |
 |---|---|---|
 | 前端入口 | `src/main.ts`（~79 KB） | 所有事件绑定、路由/浮层状态机、刷新节流；**改动需谨慎，易与其它视图冲突** |
-| 视图 | `src/views/{ladder,pool,timeline,chart,common}.ts` | 按页面拆分，只做渲染与局部更新 |
+| 视图 | `src/views/{ladder,pool,timeline,chart,strategy,common}.ts` | 按页面拆分，只做渲染与局部更新；`strategy` 是策略面板（一进二 / 竞价观察 / 策略库） |
 | 图表引擎 | `src/chart.ts`（~35 KB）、`src/timeshare.ts` | Canvas K线与分时，坐标/缩放/十字光标 |
 | 样式 | `src/styles.css`（~113 KB） | 主题 token、组件、动效；**全局单文件，天然冲突热点** |
 | 前端库 | `src/lib/{api,state,types,ui,dropdown,market}.ts` | `api` 只封装 Tauri command；`state` 是唯一 UI 状态源 |
 | mock | `src/lib/mock.ts`（~176 KB）、`mockApi.ts` | 仅 dev 用；不要为了改一处 UI 重排整个 mock |
-| Rust | `src-tauri/src/{lib,commands,db,source,models,splash,win}.rs` | 网络抓取、SQLite、交易日历、窗口与启动板 |
+| Rust | `src-tauri/src/{lib,commands,db,source,models,strategy,splash,win}.rs` | 网络抓取、SQLite、交易日历、窗口与启动板；`strategy.rs` 是策略筛选与历史回填 |
 | 构建 | `scripts/build-exe.ps1` | 前端→Rust→复制到 `release/`，不产 zip/校验文件 |
-| 文档 | `docs/DESIGN.md`、`docs/REALTIME_WS_PLAN.md`、`docs/screenshots/` | 设计说明、实时推送方案、截图基线 |
+| 文档 | `docs/DESIGN.md`、`docs/REALTIME_WS_PLAN.md`、`docs/STRATEGY_CONTRACT.md`、`docs/STRATEGY_YIJINER_PLAN.md`、`docs/screenshots/` | 设计说明、实时推送方案、策略契约与一进二方案、截图基线 |
 
 ## 4. 架构红线（不得破坏）
 
@@ -53,6 +54,7 @@ pnpm build:exe:debug # 调试版 exe
 8. **字号缩放走 WebView 系统缩放**（设置里的 102/110/118%），不要用 CSS `transform: scale()`，否则 Canvas 命中区会错位。
 9. **字体本地打包**（`public/fonts/*.woff2`），不引外链字体/CDN。
 10. **无框架**：不要引入 React/Vue/Svelte/Tailwind 等依赖；确有必要先征求用户同意。
+11. **策略只读**：策略筛选只读日快照与历史缓存，**不得写 `save_day` 的当日表**；新增持久化走 `limit_up_history` / `stock_stats` / `auction_snapshot` / `strategy_profile`。
 
 ## 5. 版本与发版
 

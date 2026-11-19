@@ -3,6 +3,7 @@ mod db;
 mod models;
 mod source;
 mod splash;
+mod strategy;
 mod win;
 
 use std::path::PathBuf;
@@ -149,6 +150,13 @@ pub fn run() {
             commands::remove_watch_stock,
             commands::get_chart_prefs,
             commands::save_chart_prefs,
+            commands::get_history_status,
+            commands::sync_limit_history,
+            commands::get_strategy_profile,
+            commands::save_strategy_profile,
+            commands::run_first_to_second,
+            commands::capture_auction,
+            commands::get_auction,
             commands::export_text,
             commands::window_control,
             commands::open_data_dir

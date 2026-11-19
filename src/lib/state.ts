@@ -1,16 +1,21 @@
 import type {
+  AuctionResult,
   CalendarInfo,
   ChartPrefs,
   ChartSelection,
   DataInfo,
   DayPayload,
+  HistoryStatus,
   IndexQuote,
   KlinePayload,
   Period,
   PoolKind,
+  ScreenResult,
   SearchItem,
   Stock,
   StockQuote,
+  StrategyProfile,
+  StrategyTab,
   Theme,
   ViewName,
   WatchGroup,
@@ -62,11 +67,25 @@ export interface AppState {
   watchGroupId: number | null;
   watchCollapsed: boolean;
   chartDock: "watch" | "insight";
+  timelineOrder: "asc" | "desc";
   dataInfo: DataInfo | null;
   sync: "idle" | "loading" | "live" | "cache" | "error";
   lastSyncAt: number;
   searchOpen: boolean;
   settingsOpen: boolean;
+  strategyTab: StrategyTab;
+  screen: ScreenResult | null;
+  screenLoading: boolean;
+  screenError: string | null;
+  history: HistoryStatus | null;
+  historyProgress: { done: number; total: number; current: string } | null;
+  profile: StrategyProfile | null;
+  profileSaving: boolean;
+  profileOpen: boolean;
+  auction: AuctionResult | null;
+  auctionLoading: boolean;
+  strategyDetailCode: string | null;
+  strategyShowExcluded: boolean;
 }
 
 const DEFAULT_CHART_RANGES: Record<Period, number> = {
@@ -96,8 +115,15 @@ function loadChartRanges(): Record<Period, number> {
   return ranges;
 }
 
-function loadTimeshareAxis(): "full" | "follow" {
+function loadTimelineOrder(): "asc" | "desc" {
   try {
+    return localStorage.getItem("tianti.timelineOrder") === "desc" ? "desc" : "asc";
+  } catch {
+    return "asc";
+  }
+}
+
+function loadTimeshareAxis(): "full" | "follow" {  try {
     return localStorage.getItem("tianti.timeshareAxis") === "follow" ? "follow" : "full";
   } catch {
     return "full";
@@ -170,11 +196,25 @@ export const state: AppState = {
   watchGroupId: null,
   watchCollapsed: false,
   chartDock: "watch",
+  timelineOrder: loadTimelineOrder(),
   dataInfo: null,
   sync: "idle",
   lastSyncAt: 0,
   searchOpen: false,
   settingsOpen: false,
+  strategyTab: "firstToSecond",
+  screen: null,
+  screenLoading: false,
+  screenError: null,
+  history: null,
+  historyProgress: null,
+  profile: null,
+  profileSaving: false,
+  profileOpen: false,
+  auction: null,
+  auctionLoading: false,
+  strategyDetailCode: null,
+  strategyShowExcluded: false,
 };
 
 export function parseHash(): { view: ViewName; code: string } {
@@ -182,6 +222,7 @@ export function parseHash(): { view: ViewName; code: string } {
   const [view, code] = raw.split("/");
   if (view === "pool") return { view: "pool", code: "" };
   if (view === "timeline") return { view: "timeline", code: "" };
+  if (view === "strategy") return { view: "strategy", code: "" };
   if (view === "chart" && code) return { view: "chart", code };
   return { view: "ladder", code: "" };
 }

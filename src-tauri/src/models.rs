@@ -258,3 +258,150 @@ pub struct DataInfo {
     pub first_date: String,
     pub last_date: String,
 }
+
+/* ————————————————— strategy ————————————————— */
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RuleCheck {
+    pub key: String,
+    pub label: String,
+    /// `None` means the underlying data is missing; never treated as a pass.
+    pub passed: Option<bool>,
+    pub value: String,
+    pub threshold: String,
+    pub note: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CandidateStats {
+    pub price: f64,
+    pub float_cap: f64,
+    pub amount: f64,
+    pub amount_estimated: bool,
+    pub seal_amount: f64,
+    pub seal_ratio: Option<f64>,
+    pub first_seal: i64,
+    /// Minutes after 09:30; one-word boards can be 0 or negative.
+    pub first_seal_minute: i64,
+    pub open_num: i64,
+    pub turnover_rate: f64,
+    pub limit_up_120d: Option<i64>,
+    pub max_streak_250d: Option<i64>,
+    pub max_gain_20d: Option<f64>,
+    pub sector_name: String,
+    pub sector_limit_ups: i64,
+    pub sector_continuous: i64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ScreenCandidate {
+    pub code: String,
+    pub name: String,
+    pub rank: Option<i64>,
+    pub score: f64,
+    pub checks: Vec<RuleCheck>,
+    pub stats: CandidateStats,
+    pub missing: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ExcludedStock {
+    pub code: String,
+    pub name: String,
+    pub failed: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryStatus {
+    pub first_date: String,
+    pub last_date: String,
+    pub days: i64,
+    pub expected_days: i64,
+    pub syncing: bool,
+    pub updated_at: i64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ScreenResult {
+    pub date: String,
+    pub universe: i64,
+    pub hard_passed: i64,
+    pub candidates: Vec<ScreenCandidate>,
+    pub excluded: Vec<ExcludedStock>,
+    pub warnings: Vec<String>,
+    pub history: HistoryStatus,
+    pub has_amount: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct StrategyProfile {
+    pub max_price: f64,
+    pub max_float_cap: f64,
+    pub min_limit_count: i64,
+    pub limit_window_days: i64,
+    pub max_streak: i64,
+    pub max_gain_20d: f64,
+    pub min_sector_limit_ups: i64,
+    pub min_sector_continuous: i64,
+    pub min_seal_ratio: f64,
+    pub max_open_num: i64,
+    pub latest_first_seal_minute: i64,
+    pub min_turnover: f64,
+    pub top_n: i64,
+    pub updated_at: i64,
+}
+
+impl Default for StrategyProfile {
+    fn default() -> Self {
+        Self {
+            max_price: 30.0,
+            max_float_cap: 20_000_000_000.0,
+            min_limit_count: 3,
+            limit_window_days: 120,
+            max_streak: 4,
+            max_gain_20d: 60.0,
+            min_sector_limit_ups: 3,
+            min_sector_continuous: 1,
+            min_seal_ratio: 0.10,
+            max_open_num: 0,
+            latest_first_seal_minute: 30,
+            min_turnover: 5.0,
+            top_n: 3,
+            updated_at: 0,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AuctionRow {
+    pub code: String,
+    pub name: String,
+    pub price: f64,
+    pub prev_close: f64,
+    pub open: f64,
+    pub volume: f64,
+    pub amount: f64,
+    pub turnover: f64,
+    pub auction_pct: f64,
+    pub amount_ratio: Option<f64>,
+    pub captured_at: i64,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AuctionResult {
+    pub date: String,
+    pub captured: bool,
+    pub captured_at: i64,
+    pub in_window: bool,
+    pub rows: Vec<AuctionRow>,
+    pub warnings: Vec<String>,
+}

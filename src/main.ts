@@ -2,7 +2,7 @@ import "./styles.css";
 import { api } from "./lib/api";
 import { closeDropdown, initDropdowns } from "./lib/dropdown";
 import { availableDates, filterStocks, findStock, neighbors, parseHash, state } from "./lib/state";
-import type { ChartPrefs, ChartSelection, Period, SearchItem, Theme, WatchStock } from "./lib/types";
+import type { ChartPrefs, ChartSelection, Period, SearchItem, StrategyProfile, StrategyTab, Theme, ViewName, WatchStock } from "./lib/types";
 import { esc, fmtBytes, fmtClock, fmtMoney, fmtShortDate, icon, relTime, tierName, weekdayFromYmd } from "./lib/ui";
 import { KLineChart } from "./chart";
 import { TimeShareChart } from "./timeshare";
@@ -10,6 +10,7 @@ import { chartSwitchContext, indicatorSummary, normalizeChartRange, renderChartD
 import { renderIndices, renderRail, renderTitlebar, syncLabel } from "./views/common";
 import { renderLadder } from "./views/ladder";
 import { renderPool, updatePoolStage, updatePoolTable } from "./views/pool";
+import { renderStrategy, renderStrategyStage, updateStrategyStage } from "./views/strategy";
 import { renderTimeline, timelineExportText } from "./views/timeline";
 
 let chart: KLineChart | null = null;
@@ -21,6 +22,10 @@ let watchQuoteLoading = false;
 let timeshareRefreshing = false;
 let lastDayAutoRefresh = 0;
 let lastChartAutoRefresh = 0;
+let strategyEnsuring = false;
+let historyUnlisten: (() => void) | null = null;
+
+type HistoryProgress = { done: number; total: number; current: string };
 let overlayKind:
   | "search"
   | "settings"
@@ -136,6 +141,7 @@ async function start(): Promise<void> {
   });
   renderShell();
   bindGlobals();
+  listenHistoryProgress();
   window.addEventListener("resize", syncToolbarOverflow);
   booted = true;
   window.setTimeout(notifyReady, 60);
@@ -147,12 +153,14 @@ async function start(): Promise<void> {
     if (state.view === "chart" && state.chartStock) void loadChartQuote(chartToken);
     void refreshWatchQuotes();
     autoRefreshTick();
+    maybeAutoCaptureAuction();
   }, 20000);
   await ensureCalendar();
   if (state.date) await loadDay(state.date, true);
   if (state.view === "chart" && state.chartStock) {
     await loadChart();
   }
+  if (state.view === "strategy") void ensureStrategy(true);
   window.setTimeout(() => {
     document.querySelector(".ladder")?.classList.remove("is-entering");
   }, 2000);
@@ -277,6 +285,9 @@ async function loadDay(date: string, initial = false): Promise<void> {
     state.poolFilter = "all";
     state.poolKind = "limitUp";
     state.poolSort = { key: "streak", dir: -1 };
+    state.screen = null;
+    state.screenError = null;
+    state.auction = null;
   }
   state.day = same;
   state.dayLoading = !same;
@@ -386,12 +397,13 @@ function changeDate(date: string | null | undefined): void {
   if (!date || date === state.date) return;
   if (state.view === "chart") return;
   closeOverlay();
-  void loadDay(date);
+  const task = loadDay(date);
+  if (state.view === "strategy") void task.then(() => ensureStrategy(true));
 }
 
 /* ————————————————— routing ————————————————— */
 
-function navigate(view: "ladder" | "pool" | "timeline" | "chart"): void {
+function navigate(view: ViewName): void {
   if (view === "chart") {
     if (!state.chartStock) {
       openSearch();
@@ -406,9 +418,218 @@ function navigate(view: "ladder" | "pool" | "timeline" | "chart"): void {
   }
   if (state.view !== "chart") state.returnView = view;
   state.view = view;
+  state.strategyDetailCode = null;
+  state.profileOpen = false;
   syncHash();
   renderMain();
   updateChrome();
+  if (view === "strategy") void ensureStrategy();
+}
+
+/* ————————————————— strategy ————————————————— */
+
+async function ensureStrategy(force = false): Promise<void> {
+  if (state.view !== "strategy" || strategyEnsuring) return;
+  strategyEnsuring = true;
+  try {
+    if (!state.profile) state.profile = await api.getStrategyProfile();
+    state.history = await api.getHistoryStatus();
+    updateStrategyStage();
+    if ((state.history?.days ?? 0) >= 120 && (force || !state.screen || state.screen.date !== state.date)) {
+      await runStrategyScreen();
+    }
+  } catch (e) {
+    state.screenError = messageFrom(e, "策略配置加载失败");
+    updateStrategyStage();
+  } finally {
+    strategyEnsuring = false;
+  }
+}
+
+async function runStrategyScreen(refresh = false): Promise<void> {
+  if (!state.date || state.screenLoading) return;
+  state.screenLoading = true;
+  state.screenError = null;
+  updateStrategyStage();
+  try {
+    state.screen = await api.runFirstToSecond(state.date, refresh);
+  } catch (e) {
+    state.screenError = messageFrom(e, "策略筛选失败");
+  } finally {
+    state.screenLoading = false;
+    updateStrategyStage();
+  }
+}
+
+async function syncStrategyHistory(): Promise<void> {
+  if (state.historyProgress) return;
+  state.historyProgress = { done: 0, total: 250, current: "" };
+  updateStrategyStage();
+  try {
+    state.history = await api.syncLimitHistory(250, false);
+    toast("涨停历史已就绪");
+    await runStrategyScreen();
+  } catch (e) {
+    toast(messageFrom(e, "历史回填失败"), "error");
+  } finally {
+    state.historyProgress = null;
+    updateStrategyStage();
+  }
+}
+
+async function loadStrategyAuction(): Promise<void> {
+  if (state.auctionLoading) return;
+  state.auctionLoading = true;
+  updateStrategyStage();
+  try {
+    state.auction = await api.getAuction(state.date);
+  } catch {
+    /* The auction tab renders its own empty state. */
+  } finally {
+    state.auctionLoading = false;
+    updateStrategyStage();
+  }
+}
+
+async function captureStrategyAuction(): Promise<void> {
+  if (state.auctionLoading) return;
+  state.auctionLoading = true;
+  updateStrategyStage();
+  try {
+    state.auction = await api.captureAuction(state.date);
+    if (state.auction.captured) {
+      toast(state.auction.inWindow ? "竞价快照已采集" : "已采集，但当前不在 09:25–09:30 窗口");
+    } else {
+      toast("没有可采集的竞价数据", "error");
+    }
+  } catch (e) {
+    toast(messageFrom(e, "竞价采集失败"), "error");
+  } finally {
+    state.auctionLoading = false;
+    updateStrategyStage();
+  }
+}
+
+/** Snapshot the auction once, only while the strategy tab is watching it. */
+function maybeAutoCaptureAuction(): void {
+  if (state.view !== "strategy" || state.strategyTab !== "auction") return;
+  if (state.auction?.captured || state.auctionLoading) return;
+  if (state.date !== state.calendar?.today) return;
+  const now = new Date(Date.now() + 8 * 3600 * 1000);
+  const clock = now.getUTCHours() * 60 + now.getUTCMinutes();
+  if (clock >= 9 * 60 + 25 && clock <= 9 * 60 + 30) void captureStrategyAuction();
+}
+
+function listenHistoryProgress(): void {
+  const bus = (
+    window as unknown as {
+      __TAURI__?: {
+        event?: {
+          listen: <T>(name: string, handler: (event: { payload: T }) => void) => Promise<() => void>;
+        };
+      };
+    }
+  ).__TAURI__?.event;
+  if (!bus || historyUnlisten) return;
+  void bus
+    .listen<HistoryProgress>("history:progress", (event) => {
+      state.historyProgress = event.payload;
+      updateStrategyStage();
+    })
+    .then((unlisten) => {
+      historyUnlisten = unlisten;
+    })
+    .catch(() => {
+      /* Progress is optional; the command still finishes. */
+    });
+}
+
+async function saveStrategyProfileFromForm(): Promise<void> {
+  const form = document.getElementById("strategy-profile-form");
+  if (!form) return;
+  const base = state.profile;
+  const read = (key: string, fallback: number): number => {
+    const input = form.querySelector<HTMLInputElement>(`[data-profile-field="${key}"]`);
+    const value = Number(input?.value);
+    return Number.isFinite(value) ? value : fallback;
+  };
+  const clamp = (value: number, min: number, max: number): number => Math.max(min, Math.min(max, value));
+  const profile: StrategyProfile = {
+    maxPrice: clamp(read("maxPrice", base?.maxPrice ?? 30), 0.01, 10_000),
+    maxFloatCap: clamp(read("maxFloatCap", (base?.maxFloatCap ?? 20_000_000_000) / 1e8), 0.1, 100_000) * 1e8,
+    minLimitCount: Math.round(clamp(read("minLimitCount", base?.minLimitCount ?? 3), 0, 100)),
+    limitWindowDays: Math.round(clamp(read("limitWindowDays", base?.limitWindowDays ?? 120), 20, 250)),
+    maxStreak: Math.round(clamp(read("maxStreak", base?.maxStreak ?? 4), 1, 30)),
+    maxGain20d: clamp(read("maxGain20d", base?.maxGain20d ?? 60), 0, 1000),
+    minSectorLimitUps: Math.round(clamp(read("minSectorLimitUps", base?.minSectorLimitUps ?? 3), 0, 200)),
+    minSectorContinuous: Math.round(clamp(read("minSectorContinuous", base?.minSectorContinuous ?? 1), 0, 100)),
+    minSealRatio: clamp(read("minSealRatio", (base?.minSealRatio ?? 0.1) * 100), 0, 100) / 100,
+    maxOpenNum: Math.round(clamp(read("maxOpenNum", base?.maxOpenNum ?? 0), 0, 100)),
+    latestFirstSealMinute: Math.round(clamp(read("latestFirstSealMinute", base?.latestFirstSealMinute ?? 30), -5, 240)),
+    minTurnover: clamp(read("minTurnover", base?.minTurnover ?? 5), 0, 100),
+    topN: Math.round(clamp(read("topN", base?.topN ?? 3), 1, 20)),
+    updatedAt: base?.updatedAt ?? 0,
+  };
+  state.profileSaving = true;
+  updateStrategyStage();
+  try {
+    state.profile = await api.saveStrategyProfile(profile);
+    state.profileOpen = false;
+    toast("策略参数已保存");
+    await runStrategyScreen();
+  } catch (e) {
+    toast(messageFrom(e, "参数保存失败"), "error");
+  } finally {
+    state.profileSaving = false;
+    updateStrategyStage();
+  }
+}
+
+function strategyExportText(): string | null {
+  const result = state.screen;
+  if (!result) return null;
+  const lines = [
+    `一进二候选 · ${result.date}`,
+    `首板 ${result.universe} 只 / 硬过滤通过 ${result.hardPassed} 只 / 候选 ${result.candidates.length} 只`,
+    "",
+    ["名次", "代码", "名称", "首封", "封单比", "开板", "换手", "流通(亿)", "近6月涨停", "近1年最高", "规则分"].join("\t"),
+  ];
+  for (const c of result.candidates) {
+    lines.push(
+      [
+        c.rank ?? "-",
+        c.code,
+        c.name,
+        fmtClock(c.stats.firstSeal),
+        c.stats.sealRatio == null ? "—" : `${(c.stats.sealRatio * 100).toFixed(1)}%`,
+        String(c.stats.openNum),
+        `${c.stats.turnoverRate.toFixed(1)}%`,
+        (c.stats.floatCap / 1e8).toFixed(1),
+        c.stats.limitUp120d == null ? "—" : String(c.stats.limitUp120d),
+        c.stats.maxStreak250d == null ? "—" : `${c.stats.maxStreak250d}板`,
+        c.score.toFixed(0),
+      ].join("\t"),
+    );
+  }
+  lines.push("", "仅为按固定规则筛出的复盘候选，不构成投资建议。");
+  return lines.join("\n");
+}
+
+async function exportStrategy(): Promise<void> {
+  const text = strategyExportText();
+  if (!text) {
+    toast("没有可导出的候选");
+    return;
+  }
+  const raw = state.screen?.date || state.date || "";
+  const date = raw.length === 8 ? `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6, 8)}` : raw || "strategy";
+  try {
+    const path = await api.exportText(`一进二候选_${date}.txt`, text);
+    const name = path.split(/[\\/]/).pop() || "一进二候选.txt";
+    toast(`已导出：data/exports/${name}`);
+  } catch (e) {
+    toast(messageFrom(e, "导出失败"), "error");
+  }
 }
 
 function openChart(code: string, name: string, market = "", animate = true): void {
@@ -456,10 +677,19 @@ function chartBack(): void {
 
 async function fetchChartData(period: Period, refresh: boolean) {
   const stock = state.chartStock!;
+  // Only the timeshare plot may accept Tencent's tick line as a fallback: it
+  // reads close alone, while the 1m K-line view must not get fake OHLC.
+  const allowMinuteFallback = state.chartMode === "timeshare";
   if (stock.kind === "index") {
-    return api.getIndexKline(stock.secid || stock.code, stock.name, period, refresh);
+    return api.getIndexKline(
+      stock.secid || stock.code,
+      stock.name,
+      period,
+      refresh,
+      allowMinuteFallback,
+    );
   }
-  return api.getKline(stock.code, period, refresh);
+  return api.getKline(stock.code, period, refresh, allowMinuteFallback);
 }
 
 async function loadChartQuote(token: number): Promise<void> {
@@ -657,6 +887,7 @@ function renderMain(opts: { animate?: boolean } = {}): void {
   if (state.view === "pool") html = renderPool();
   else if (state.view === "timeline") html = renderTimeline();
   else if (state.view === "chart") html = renderChartView();
+  else if (state.view === "strategy") html = renderStrategy();
   else html = renderLadder();
   main.innerHTML = html;
   if (opts.animate === false) main.querySelector(".view")?.classList.add("no-anim");
@@ -762,6 +993,10 @@ function bindGlobals(): void {
       if (!overlayKind) openSearch();
     } else if (e.key === "Escape" && overlayKind) {
       closeOverlay();
+    } else if (e.key === "Escape" && (state.profileOpen || state.strategyDetailCode)) {
+      state.profileOpen = false;
+      state.strategyDetailCode = null;
+      updateStrategyStage();
     } else if (!overlayKind && state.view !== "chart" && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
@@ -862,6 +1097,11 @@ function handleClick(e: MouseEvent): void {
   document.querySelectorAll<HTMLElement>(".period-more.is-open").forEach((el) => {
     if (el !== periodMore) el.classList.remove("is-open");
   });
+  if (!periodMore) {
+    document.querySelectorAll<HTMLElement>(".chart-toolbar-controls.is-menu-open").forEach((el) => {
+      el.classList.remove("is-menu-open");
+    });
+  }
   const win = target.closest<HTMLElement>("[data-win]");
   if (win) {
     const action = win.dataset.win as "minimize" | "maximize" | "close";
@@ -870,12 +1110,107 @@ function handleClick(e: MouseEvent): void {
   }
   const nav = target.closest<HTMLElement>("[data-nav]");
   if (nav) {
-    navigate(nav.dataset.nav as "ladder" | "pool" | "timeline" | "chart");
+    navigate(nav.dataset.nav as ViewName);
+    return;
+  }
+  const strategyTab = target.closest<HTMLElement>("[data-strategy-tab]");
+  if (strategyTab) {
+    const tab = strategyTab.dataset.strategyTab as StrategyTab | undefined;
+    if (tab) {
+      state.strategyTab = tab;
+      state.strategyDetailCode = null;
+      updateStrategyStage();
+      if (tab === "auction") void loadStrategyAuction();
+      else if (tab === "firstToSecond" && (!state.screen || state.screen.date !== state.date)) void runStrategyScreen();
+    }
+    return;
+  }
+  if (target.closest("[data-strategy-run]")) {
+    void runStrategyScreen();
+    return;
+  }
+  if (target.closest("[data-strategy-prev-day]")) {
+    const prev = neighbors().prev;
+    if (prev) changeDate(prev);
+    return;
+  }
+  if (target.closest("[data-history-sync]")) {
+    void syncStrategyHistory();
+    return;
+  }
+  if (target.closest("[data-open-profile]")) {
+    state.profileOpen = true;
+    updateStrategyStage();
+    return;
+  }
+  if (target.closest("[data-profile-close]")) {
+    state.profileOpen = false;
+    updateStrategyStage();
+    return;
+  }
+  if (target.closest("[data-profile-save]")) {
+    void saveStrategyProfileFromForm();
+    return;
+  }
+  if (target.closest("[data-strategy-refresh]")) {
+    state.screen = null;
+    state.screenError = null;
+    void runStrategyScreen(true);
+    return;
+  }
+  if (target.closest("[data-strategy-show-excluded]")) {
+    state.strategyShowExcluded = !state.strategyShowExcluded;
+    updateStrategyStage();
+    return;
+  }
+  if (target.closest("[data-detail-close]")) {
+    state.strategyDetailCode = null;
+    updateStrategyStage();
+    return;
+  }
+  if (target.closest("[data-auction-capture]")) {
+    void captureStrategyAuction();
+    return;
+  }
+  if (target.closest("[data-strategy-export]")) {
+    void exportStrategy();
+    return;
+  }
+  const watchCandidate = target.closest<HTMLElement>("[data-candidate-watch]");
+  if (watchCandidate) {
+    const code = watchCandidate.dataset.candidateWatch || "";
+    const stock = state.day?.stocks.find((item) => item.code === code) ?? findStock(code);
+    if (stock) {
+      void openWatchAddDialog([{ code: stock.code, name: stock.name, market: stock.market }], `把 ${stock.name} 加入自选`);
+    }
+    return;
+  }
+  const detailCandidate = target.closest<HTMLElement>("[data-candidate-detail]");
+  if (detailCandidate) {
+    state.strategyDetailCode = detailCandidate.dataset.candidateDetail || null;
+    updateStrategyStage();
+    return;
+  }
+  if (target.closest("[data-candidate-ops]")) return;
+  const candidateRow = target.closest<HTMLElement>("[data-candidate-code]");
+  if (candidateRow) {
+    openChart(candidateRow.dataset.candidateCode!, candidateRow.dataset.candidateName || "");
     return;
   }
   const indexEl = target.closest<HTMLElement>("[data-index-secid]");
   if (indexEl) {
     openIndexChart(indexEl.dataset.indexSecid!, indexEl.dataset.indexName || "指数");
+    return;
+  }
+  const timelineOrder = target.closest<HTMLElement>("[data-timeline-order]");
+  if (timelineOrder) {
+    state.timelineOrder = timelineOrder.dataset.timelineOrder === "desc" ? "desc" : "asc";
+    try {
+      localStorage.setItem("tianti.timelineOrder", state.timelineOrder);
+    } catch {
+      /* storage is optional */
+    }
+    renderMain({ animate: false });
     return;
   }
   const axisBtn = target.closest<HTMLElement>("[data-timeshare-axis]");
@@ -1043,7 +1378,11 @@ function handleClick(e: MouseEvent): void {
       }
       break;
     case "period-menu":
-      actionEl.closest(".period-more")?.classList.toggle("is-open");
+      {
+        const more = actionEl.closest<HTMLElement>(".period-more");
+        const opened = more?.classList.toggle("is-open") === true;
+        actionEl.closest<HTMLElement>(".chart-toolbar-controls")?.classList.toggle("is-menu-open", opened);
+      }
       break;
     case "export-timeline":
       void exportTimeline();
@@ -1086,7 +1425,10 @@ function handleKeydown(e: KeyboardEvent): void {
   const target = e.target as HTMLElement;
   if (e.key === "Escape") {
     const openMenu = document.querySelector<HTMLElement>(".period-more.is-open");
-    if (openMenu) openMenu.classList.remove("is-open");
+    if (openMenu) {
+      openMenu.classList.remove("is-open");
+      openMenu.closest<HTMLElement>(".chart-toolbar-controls")?.classList.remove("is-menu-open");
+    }
   }
   if (e.key === "Escape" && overlayKind) {
     closeOverlay();
@@ -1897,7 +2239,7 @@ function openSettings(): void {
         <div class="setting-section">
           <div class="setting-label">关于</div>
           <div class="about-text">
-            天梯 · A股涨停复盘　<b>v1.2.2</b><br />
+            天梯 · A股涨停复盘　<b>v1.3.0</b><br />
             涨停与板块数据来自同花顺公开接口，K线来自东方财富公开接口。<br />
             所有数据仅用于学习复盘，不构成投资建议。快捷键：<b>Ctrl K</b> 搜索，<b>← →</b> 切换交易日，<b>Esc</b> 关闭浮层。
           </div>

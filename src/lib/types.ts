@@ -1,8 +1,9 @@
 export type Theme = "dark" | "light";
 export type Period = "1m" | "15m" | "30m" | "60m" | "day" | "week" | "month" | "year";
 export type ChartMode = "kline" | "timeshare";
-export type ViewName = "ladder" | "pool" | "timeline" | "chart";
+export type ViewName = "ladder" | "pool" | "timeline" | "chart" | "strategy";
 export type PoolKind = "limitUp" | "openLimit" | "limitDown";
+export type StrategyTab = "firstToSecond" | "auction" | "library";
 
 export interface Stock {
   code: string;
@@ -197,4 +198,110 @@ export interface DataInfo {
   klineCount: number;
   firstDate: string;
   lastDate: string;
+}
+
+/* ————————————————— strategy ————————————————— */
+
+export interface RuleCheck {
+  key: string;
+  label: string;
+  passed: boolean | null;
+  value: string;
+  threshold: string;
+  note?: string | null;
+}
+
+export interface CandidateStats {
+  price: number;
+  floatCap: number;
+  amount: number;
+  amountEstimated: boolean;
+  sealAmount: number;
+  sealRatio: number | null;
+  firstSeal: number;
+  firstSealMinute: number;
+  openNum: number;
+  turnoverRate: number;
+  limitUp120d: number | null;
+  maxStreak250d: number | null;
+  maxGain20d: number | null;
+  sectorName: string;
+  sectorLimitUps: number;
+  sectorContinuous: number;
+}
+
+export interface ScreenCandidate {
+  code: string;
+  name: string;
+  rank: number | null;
+  score: number;
+  checks: RuleCheck[];
+  stats: CandidateStats;
+  missing: string[];
+}
+
+export interface ExcludedStock {
+  code: string;
+  name: string;
+  failed: string[];
+}
+
+export interface HistoryStatus {
+  firstDate: string;
+  lastDate: string;
+  days: number;
+  expectedDays: number;
+  syncing: boolean;
+  updatedAt: number;
+}
+
+export interface ScreenResult {
+  date: string;
+  universe: number;
+  hardPassed: number;
+  candidates: ScreenCandidate[];
+  excluded: ExcludedStock[];
+  warnings: string[];
+  history: HistoryStatus;
+  hasAmount: boolean;
+}
+
+export interface StrategyProfile {
+  maxPrice: number;
+  maxFloatCap: number;
+  minLimitCount: number;
+  limitWindowDays: number;
+  maxStreak: number;
+  maxGain20d: number;
+  minSectorLimitUps: number;
+  minSectorContinuous: number;
+  minSealRatio: number;
+  maxOpenNum: number;
+  latestFirstSealMinute: number;
+  minTurnover: number;
+  topN: number;
+  updatedAt: number;
+}
+
+export interface AuctionRow {
+  code: string;
+  name: string;
+  price: number;
+  prevClose: number;
+  open: number;
+  volume: number;
+  amount: number;
+  turnover: number;
+  auctionPct: number;
+  amountRatio: number | null;
+  capturedAt: number;
+}
+
+export interface AuctionResult {
+  date: string;
+  captured: boolean;
+  capturedAt: number;
+  inWindow: boolean;
+  rows: AuctionRow[];
+  warnings: string[];
 }

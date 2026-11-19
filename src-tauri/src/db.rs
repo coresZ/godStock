@@ -1,8 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use chrono::{FixedOffset, Timelike, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::models::*;
@@ -203,9 +204,75 @@ pub fn init(path: &Path) -> Result<()> {
             PRIMARY KEY (code, date)
         );
 
+        CREATE TABLE IF NOT EXISTS limit_up_history (
+            date TEXT NOT NULL,
+            code TEXT NOT NULL,
+            name TEXT NOT NULL DEFAULT '',
+            board INTEGER NOT NULL DEFAULT 0,
+            days INTEGER NOT NULL DEFAULT 0,
+            streak INTEGER NOT NULL DEFAULT 0,
+            high_days TEXT NOT NULL DEFAULT '',
+            price REAL NOT NULL DEFAULT 0,
+            change_rate REAL NOT NULL DEFAULT 0,
+            turnover_rate REAL NOT NULL DEFAULT 0,
+            seal_amount REAL NOT NULL DEFAULT 0,
+            amount_est REAL NOT NULL DEFAULT 0,
+            first_seal INTEGER NOT NULL DEFAULT 0,
+            open_num INTEGER NOT NULL DEFAULT 0,
+            limit_type TEXT NOT NULL DEFAULT '',
+            float_cap REAL NOT NULL DEFAULT 0,
+            market TEXT NOT NULL DEFAULT '',
+            is_new INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (date, code)
+        );
+
+        CREATE TABLE IF NOT EXISTS stock_stats (
+            code TEXT PRIMARY KEY,
+            as_of TEXT NOT NULL,
+            limit_up_120d INTEGER NOT NULL DEFAULT 0,
+            max_streak_250d INTEGER NOT NULL DEFAULT 0,
+            max_gain_20d REAL NOT NULL DEFAULT 0,
+            max_gain_250d REAL NOT NULL DEFAULT 0,
+            prev_day_amount REAL NOT NULL DEFAULT 0,
+            last_limit_date TEXT NOT NULL DEFAULT '',
+            computed_at INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS auction_snapshot (
+            date TEXT NOT NULL,
+            code TEXT NOT NULL,
+            price REAL NOT NULL DEFAULT 0,
+            prev_close REAL NOT NULL DEFAULT 0,
+            volume REAL NOT NULL DEFAULT 0,
+            amount REAL NOT NULL DEFAULT 0,
+            turnover REAL NOT NULL DEFAULT 0,
+            captured_at INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (date, code)
+        );
+
+        CREATE TABLE IF NOT EXISTS strategy_profile (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            max_price REAL NOT NULL,
+            max_float_cap REAL NOT NULL,
+            min_limit_count INTEGER NOT NULL,
+            limit_window_days INTEGER NOT NULL,
+            max_streak INTEGER NOT NULL,
+            max_gain_20d REAL NOT NULL,
+            min_sector_limit_ups INTEGER NOT NULL,
+            min_sector_continuous INTEGER NOT NULL,
+            min_seal_ratio REAL NOT NULL,
+            max_open_num INTEGER NOT NULL,
+            latest_first_seal_minute INTEGER NOT NULL,
+            min_turnover REAL NOT NULL,
+            top_n INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+
         CREATE INDEX IF NOT EXISTS idx_limit_up_streak ON limit_up (date, streak);
         CREATE INDEX IF NOT EXISTS idx_tick_date ON limit_up_tick (date, code);
         CREATE INDEX IF NOT EXISTS idx_sectors_date ON sectors (date, limit_up_num);
+        CREATE INDEX IF NOT EXISTS idx_limit_hist_code_date ON limit_up_history (code, date);
+        CREATE INDEX IF NOT EXISTS idx_stock_stats_asof ON stock_stats (as_of);
         "#,
     )?;
     conn.execute(
@@ -214,6 +281,7 @@ pub fn init(path: &Path) -> Result<()> {
     )?;
     migrate(&conn)?;
     ensure_default_watch_group(&conn)?;
+    ensure_default_profile(&conn)?;
     Ok(())
 }
 
@@ -259,6 +327,36 @@ fn ensure_default_watch_group(conn: &Connection) -> Result<()> {
             params![chrono::Utc::now().timestamp()],
         )?;
     }
+    Ok(())
+}
+
+/// Single-row strategy config. Seeded once so `load_profile` can always read a
+/// concrete row; `updated_at == 0` marks "never saved by the user".
+fn ensure_default_profile(conn: &Connection) -> Result<()> {
+    let def = StrategyProfile::default();
+    conn.execute(
+        r#"INSERT OR IGNORE INTO strategy_profile
+           (id, max_price, max_float_cap, min_limit_count, limit_window_days, max_streak,
+            max_gain_20d, min_sector_limit_ups, min_sector_continuous, min_seal_ratio,
+            max_open_num, latest_first_seal_minute, min_turnover, top_n, updated_at)
+           VALUES (1,?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)"#,
+        params![
+            def.max_price,
+            def.max_float_cap,
+            def.min_limit_count,
+            def.limit_window_days,
+            def.max_streak,
+            def.max_gain_20d,
+            def.min_sector_limit_ups,
+            def.min_sector_continuous,
+            def.min_seal_ratio,
+            def.max_open_num,
+            def.latest_first_seal_minute,
+            def.min_turnover,
+            def.top_n,
+            def.updated_at,
+        ],
+    )?;
     Ok(())
 }
 
@@ -1095,4 +1193,465 @@ pub fn today_ymd() -> String {
 
 pub fn now_ts() -> i64 {
     chrono::Utc::now().timestamp()
+}
+
+/* ————————————————— limit_up_history ————————————————— */
+
+/// One parsed `limit_up_pool` row stored in `limit_up_history`. The history
+/// endpoint has no sector payload, so `streak` mirrors `board` (see the
+/// strategy contract: consecutive boards are rebuilt from the date series).
+#[derive(Clone, Debug, Default)]
+pub struct LimitHistoryRow {
+    pub code: String,
+    pub name: String,
+    pub board: i64,
+    pub days: i64,
+    pub streak: i64,
+    pub high_days: String,
+    pub price: f64,
+    pub change_rate: f64,
+    pub turnover_rate: f64,
+    pub seal_amount: f64,
+    pub amount_est: f64,
+    pub first_seal: i64,
+    pub open_num: i64,
+    pub limit_type: String,
+    pub float_cap: f64,
+    pub market: String,
+    pub is_new: bool,
+}
+
+/// Replace every row for `date`. Kept separate from `save_day` on purpose: the
+/// backfill must never touch the day snapshot (`limit_up` / `day_snapshot`).
+pub fn save_limit_history(conn: &mut Connection, date: &str, rows: &[LimitHistoryRow]) -> Result<()> {
+    let tx = conn.transaction()?;
+    tx.execute("DELETE FROM limit_up_history WHERE date = ?1", params![date])?;
+    {
+        let mut st = tx.prepare(
+            r#"INSERT OR REPLACE INTO limit_up_history
+            (date, code, name, board, days, streak, high_days, price, change_rate, turnover_rate,
+             seal_amount, amount_est, first_seal, open_num, limit_type, float_cap, market, is_new)
+            VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)"#,
+        )?;
+        for r in rows {
+            st.execute(params![
+                date,
+                r.code,
+                r.name,
+                r.board,
+                r.days,
+                r.streak,
+                r.high_days,
+                r.price,
+                r.change_rate,
+                r.turnover_rate,
+                r.seal_amount,
+                r.amount_est,
+                r.first_seal,
+                r.open_num,
+                r.limit_type,
+                r.float_cap,
+                r.market,
+                if r.is_new { 1 } else { 0 },
+            ])?;
+        }
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// `(first_date, last_date, distinct_days)` of the backfilled history.
+pub fn history_coverage(conn: &Connection) -> Result<(String, String, i64)> {
+    let row = conn.query_row(
+        "SELECT COALESCE(MIN(date),''), COALESCE(MAX(date),''), COUNT(DISTINCT date) FROM limit_up_history",
+        [],
+        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)),
+    )?;
+    Ok(row)
+}
+
+pub fn history_status(conn: &Connection, syncing: bool) -> Result<HistoryStatus> {
+    let (first_date, last_date, days) = history_coverage(conn)?;
+    let today = today_ymd();
+    let calendar_days: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM trade_days WHERE is_trade=1 AND date<=?1",
+            params![today],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    // Before the close, today's limit-up pool may legitimately be empty (or not
+    // ready yet); do not demand a coverage day the market cannot provide.
+    let today_is_trade: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM trade_days WHERE date=?1 AND is_trade=1",
+            params![today],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    let today_rows: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM limit_up_history WHERE date=?1",
+            params![today],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    let before_close = {
+        let tz = FixedOffset::east_opt(8 * 3600).unwrap();
+        let now = Utc::now().with_timezone(&tz);
+        now.hour() * 60 + now.minute() < 15 * 60 + 5
+    };
+    let mut expected = calendar_days.min(250);
+    if today_is_trade > 0 && today_rows == 0 && before_close {
+        expected = expected.saturating_sub(1).max(days);
+    }
+    let updated_at: i64 = conn
+        .query_row("SELECT value FROM app_meta WHERE key='limit_history_at'", [], |r| {
+            r.get::<_, String>(0)
+        })
+        .optional()?
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(0);
+    Ok(HistoryStatus {
+        first_date,
+        last_date,
+        days,
+        expected_days: expected.max(days),
+        syncing,
+        updated_at,
+    })
+}
+
+/// Distinct dates that already carry history rows (used to skip a re-fetch).
+pub fn history_dates(conn: &Connection) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    let mut st = conn.prepare("SELECT DISTINCT date FROM limit_up_history ORDER BY date ASC")?;
+    let iter = st.query_map([], |r| r.get::<_, String>(0))?;
+    for row in iter {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
+/// Trade days up to and including `date`, ascending, capped at `limit`. Falls
+/// back to the dates already present in `limit_up_history` when the calendar
+/// was never fetched, so screening still works on a cold install.
+pub fn trade_days_upto(conn: &Connection, date: &str, limit: usize) -> Result<Vec<String>> {
+    let mut days: Vec<String> = Vec::new();
+    {
+        let mut st = conn.prepare(
+            "SELECT date FROM trade_days WHERE is_trade=1 AND date<=?1 ORDER BY date DESC LIMIT ?2",
+        )?;
+        let iter = st.query_map(params![date, limit as i64], |r| r.get::<_, String>(0))?;
+        for row in iter {
+            days.push(row?);
+        }
+    }
+    if days.is_empty() {
+        let mut st = conn.prepare(
+            "SELECT DISTINCT date FROM limit_up_history WHERE date<=?1 ORDER BY date DESC LIMIT ?2",
+        )?;
+        let iter = st.query_map(params![date, limit as i64], |r| r.get::<_, String>(0))?;
+        for row in iter {
+            days.push(row?);
+        }
+    }
+    days.reverse();
+    Ok(days)
+}
+
+/// Codes that hit the limit on `date`. An empty set means "no history for that
+/// day", which the screen treats as insufficient data rather than "nobody".
+pub fn history_codes_for_date(conn: &Connection, date: &str) -> Result<HashSet<String>> {
+    let mut out = HashSet::new();
+    let mut st = conn.prepare("SELECT code FROM limit_up_history WHERE date=?1")?;
+    let iter = st.query_map(params![date], |r| r.get::<_, String>(0))?;
+    for row in iter {
+        out.insert(row?);
+    }
+    Ok(out)
+}
+
+/// `code -> dates (ascending)` inside `[start, end]`.
+pub fn history_occurrences(conn: &Connection, start: &str, end: &str) -> Result<HashMap<String, Vec<String>>> {
+    let mut out: HashMap<String, Vec<String>> = HashMap::new();
+    let mut st = conn.prepare(
+        "SELECT code, date FROM limit_up_history WHERE date>=?1 AND date<=?2 ORDER BY code ASC, date ASC",
+    )?;
+    let iter = st.query_map(params![start, end], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+    for row in iter {
+        let (code, date) = row?;
+        out.entry(code).or_default().push(date);
+    }
+    Ok(out)
+}
+
+pub fn history_last_dates(conn: &Connection) -> Result<HashMap<String, String>> {
+    let mut out = HashMap::new();
+    let mut st = conn.prepare("SELECT code, MAX(date) FROM limit_up_history GROUP BY code")?;
+    let iter = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+    for row in iter {
+        let (code, date) = row?;
+        out.insert(code, date);
+    }
+    Ok(out)
+}
+
+/* ————————————————— stock_stats ————————————————— */
+
+#[derive(Clone, Debug, Default)]
+pub struct StockStatsRow {
+    pub code: String,
+    pub as_of: String,
+    pub limit_up_120d: i64,
+    pub max_streak_250d: i64,
+    pub max_gain_20d: f64,
+    pub max_gain_250d: f64,
+    pub prev_day_amount: f64,
+    pub last_limit_date: String,
+    pub computed_at: i64,
+}
+
+pub fn save_stock_stats(conn: &Connection, row: &StockStatsRow) -> Result<()> {
+    conn.execute(
+        r#"INSERT INTO stock_stats
+           (code, as_of, limit_up_120d, max_streak_250d, max_gain_20d, max_gain_250d,
+            prev_day_amount, last_limit_date, computed_at)
+           VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+           ON CONFLICT(code) DO UPDATE SET
+             as_of=excluded.as_of,
+             limit_up_120d=excluded.limit_up_120d,
+             max_streak_250d=excluded.max_streak_250d,
+             max_gain_20d=excluded.max_gain_20d,
+             max_gain_250d=excluded.max_gain_250d,
+             prev_day_amount=excluded.prev_day_amount,
+             last_limit_date=excluded.last_limit_date,
+             computed_at=excluded.computed_at"#,
+        params![
+            row.code,
+            row.as_of,
+            row.limit_up_120d,
+            row.max_streak_250d,
+            row.max_gain_20d,
+            row.max_gain_250d,
+            row.prev_day_amount,
+            row.last_limit_date,
+            row.computed_at,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn load_stock_stats(conn: &Connection, code: &str) -> Result<Option<StockStatsRow>> {
+    Ok(conn
+        .query_row(
+            r#"SELECT code, as_of, limit_up_120d, max_streak_250d, max_gain_20d, max_gain_250d,
+               prev_day_amount, last_limit_date, computed_at
+               FROM stock_stats WHERE code=?1"#,
+            params![code],
+            |r| {
+                Ok(StockStatsRow {
+                    code: r.get(0)?,
+                    as_of: r.get(1)?,
+                    limit_up_120d: r.get(2)?,
+                    max_streak_250d: r.get(3)?,
+                    max_gain_20d: r.get(4)?,
+                    max_gain_250d: r.get(5)?,
+                    prev_day_amount: r.get(6)?,
+                    last_limit_date: r.get(7)?,
+                    computed_at: r.get(8)?,
+                })
+            },
+        )
+        .optional()?)
+}
+
+/// `code -> prev_day_amount`, for the auction `amount_ratio` column.
+pub fn prev_day_amounts(conn: &Connection) -> Result<HashMap<String, f64>> {
+    let mut out = HashMap::new();
+    let mut st = conn.prepare("SELECT code, prev_day_amount FROM stock_stats WHERE prev_day_amount > 0")?;
+    let iter = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?)))?;
+    for row in iter {
+        let (code, amount) = row?;
+        out.insert(code, amount);
+    }
+    Ok(out)
+}
+
+/* ————————————————— auction_snapshot ————————————————— */
+
+pub fn save_auction(conn: &mut Connection, date: &str, rows: &[AuctionRow]) -> Result<()> {
+    let tx = conn.transaction()?;
+    tx.execute("DELETE FROM auction_snapshot WHERE date=?1", params![date])?;
+    {
+        let mut st = tx.prepare(
+            r#"INSERT OR REPLACE INTO auction_snapshot
+               (date, code, price, prev_close, volume, amount, turnover, captured_at)
+               VALUES (?1,?2,?3,?4,?5,?6,?7,?8)"#,
+        )?;
+        for r in rows {
+            st.execute(params![
+                date,
+                r.code,
+                r.price,
+                r.prev_close,
+                r.volume,
+                r.amount,
+                r.turnover,
+                r.captured_at,
+            ])?;
+        }
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// Rebuild auction rows from disk. `name` comes from the day snapshot (`open`
+/// has no column in the contract DDL and therefore reads back as 0).
+pub fn load_auction(conn: &Connection, date: &str) -> Result<Vec<AuctionRow>> {
+    let prev = prev_day_amounts(conn).unwrap_or_default();
+    let mut names: HashMap<String, String> = HashMap::new();
+    {
+        let mut st = conn.prepare("SELECT code, name FROM limit_up WHERE date=?1")?;
+        let iter = st.query_map(params![date], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        for row in iter {
+            let (code, name) = row?;
+            names.insert(code, name);
+        }
+    }
+    let mut out = Vec::new();
+    let mut st = conn.prepare(
+        r#"SELECT code, price, prev_close, volume, amount, turnover, captured_at
+           FROM auction_snapshot WHERE date=?1 ORDER BY code ASC"#,
+    )?;
+    let iter = st.query_map(params![date], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, f64>(1)?,
+            r.get::<_, f64>(2)?,
+            r.get::<_, f64>(3)?,
+            r.get::<_, f64>(4)?,
+            r.get::<_, f64>(5)?,
+            r.get::<_, i64>(6)?,
+        ))
+    })?;
+    for row in iter {
+        let (code, price, prev_close, volume, amount, turnover, captured_at) = row?;
+        let pct = if prev_close > 0.0 { (price / prev_close - 1.0) * 100.0 } else { 0.0 };
+        let amount_ratio = prev.get(&code).copied().filter(|v| *v > 0.0).map(|v| amount / v);
+        let name = names.get(&code).cloned().unwrap_or_default();
+        out.push(AuctionRow {
+            code,
+            name,
+            price,
+            prev_close,
+            open: 0.0,
+            volume,
+            amount,
+            turnover,
+            auction_pct: pct,
+            amount_ratio,
+            captured_at,
+        });
+    }
+    Ok(out)
+}
+
+/// First-board stocks of a stored day snapshot (`limit_up.streak <= 1`).
+/// Previous trading day strictly before `date` (None when the calendar is missing).
+pub fn prev_trade_day(conn: &Connection, date: &str) -> Result<Option<String>> {
+    let row: Option<String> = conn
+        .query_row(
+            "SELECT date FROM trade_days WHERE is_trade=1 AND date<?1 ORDER BY date DESC LIMIT 1",
+            params![date],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?;
+    Ok(row)
+}
+
+pub fn limit_up_first_board(conn: &Connection, date: &str) -> Result<Vec<(String, String)>> {    let mut out = Vec::new();
+    let mut st = conn.prepare(
+        "SELECT code, name FROM limit_up WHERE date=?1 AND streak<=1 ORDER BY seal_amount DESC, code ASC",
+    )?;
+    let iter = st.query_map(params![date], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+    for row in iter {
+        out.push(row?);
+    }
+    Ok(out)
+}
+
+/* ————————————————— strategy_profile ————————————————— */
+
+pub fn load_profile(conn: &Connection) -> Result<StrategyProfile> {
+    let row: Option<StrategyProfile> = conn
+        .query_row(
+            r#"SELECT max_price, max_float_cap, min_limit_count, limit_window_days, max_streak,
+               max_gain_20d, min_sector_limit_ups, min_sector_continuous, min_seal_ratio,
+               max_open_num, latest_first_seal_minute, min_turnover, top_n, updated_at
+               FROM strategy_profile WHERE id=1"#,
+            [],
+            |r| {
+                Ok(StrategyProfile {
+                    max_price: r.get(0)?,
+                    max_float_cap: r.get(1)?,
+                    min_limit_count: r.get(2)?,
+                    limit_window_days: r.get(3)?,
+                    max_streak: r.get(4)?,
+                    max_gain_20d: r.get(5)?,
+                    min_sector_limit_ups: r.get(6)?,
+                    min_sector_continuous: r.get(7)?,
+                    min_seal_ratio: r.get(8)?,
+                    max_open_num: r.get(9)?,
+                    latest_first_seal_minute: r.get(10)?,
+                    min_turnover: r.get(11)?,
+                    top_n: r.get(12)?,
+                    updated_at: r.get(13)?,
+                })
+            },
+        )
+        .optional()?;
+    Ok(row.unwrap_or_default())
+}
+
+pub fn save_profile(conn: &Connection, p: &StrategyProfile) -> Result<()> {
+    conn.execute(
+        r#"INSERT INTO strategy_profile
+           (id, max_price, max_float_cap, min_limit_count, limit_window_days, max_streak,
+            max_gain_20d, min_sector_limit_ups, min_sector_continuous, min_seal_ratio,
+            max_open_num, latest_first_seal_minute, min_turnover, top_n, updated_at)
+           VALUES (1,?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
+           ON CONFLICT(id) DO UPDATE SET
+             max_price=excluded.max_price,
+             max_float_cap=excluded.max_float_cap,
+             min_limit_count=excluded.min_limit_count,
+             limit_window_days=excluded.limit_window_days,
+             max_streak=excluded.max_streak,
+             max_gain_20d=excluded.max_gain_20d,
+             min_sector_limit_ups=excluded.min_sector_limit_ups,
+             min_sector_continuous=excluded.min_sector_continuous,
+             min_seal_ratio=excluded.min_seal_ratio,
+             max_open_num=excluded.max_open_num,
+             latest_first_seal_minute=excluded.latest_first_seal_minute,
+             min_turnover=excluded.min_turnover,
+             top_n=excluded.top_n,
+             updated_at=excluded.updated_at"#,
+        params![
+            p.max_price,
+            p.max_float_cap,
+            p.min_limit_count,
+            p.limit_window_days,
+            p.max_streak,
+            p.max_gain_20d,
+            p.min_sector_limit_ups,
+            p.min_sector_continuous,
+            p.min_seal_ratio,
+            p.max_open_num,
+            p.latest_first_seal_minute,
+            p.min_turnover,
+            p.top_n,
+            p.updated_at,
+        ],
+    )?;
+    Ok(())
 }

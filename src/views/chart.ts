@@ -145,6 +145,25 @@ export function indicatorSummary(prefs: ChartPrefs): string {
   return parts.join(" · ") || "未启用指标";
 }
 
+function oneMinuteNote(): string {
+  if (state.chartPeriod !== "1m" || state.chartData?.period !== "1m" || state.chartError) return "";
+  const bars = state.chartData.candles;
+  if (bars.length === 1) return "1分钟数据不足 · 开盘后再看";
+  if (bars.length > 1 && bars.every((bar) => bar.high === bar.low)) {
+    return "1分钟全时段无波动 · 可能一字板";
+  }
+  return "";
+}
+
+/** 分时允许回退到腾讯点位；那一份只有收盘价，脚注必须说清楚。 */
+function tencentLineNote(): string {
+  return state.chartData?.source === "tencent" ? "东财分钟接口不可达 · 腾讯分时点位（仅收盘价）" : "";
+}
+
+function sourceLabel(): string {
+  return state.chartData?.source === "tencent" ? "腾讯分时" : "东方财富";
+}
+
 export function renderChartView(): string {
   const stock = state.chartStock;
   if (!stock) {
@@ -171,7 +190,7 @@ export function renderChartView(): string {
             ${state.chartLoading ? `<div class="chart-loading"><span class="loader"></span><span>正在刷新 ${state.chartMode === "timeshare" ? "分时" : esc(PERIOD_LABEL[state.chartPeriod] || "K线")}</span></div>` : ""}
             ${state.chartError ? `<div class="chart-error"><div class="error-title">K线没有加载</div><span>${esc(state.chartError)}</span><button class="chart-retry" data-action="chart-retry">重新加载</button></div>` : ""}
           </div>
-          <div class="chart-footnote"><span>东方财富 · ${state.chartMode === "timeshare" ? "分时" : "前复权"}${stock.kind === "index" ? " · 指数" : ""}</span><span>${state.chartMode === "timeshare" ? (stock.kind === "index" ? "左轴 点数 · 右轴 百分比" : "左轴 价格 · 右轴 百分比") : esc(indicatorSummary(state.chartPrefs))}</span></div>
+          <div class="chart-footnote"><span>东方财富 · ${state.chartMode === "timeshare" ? "分时" : "前复权"}${stock.kind === "index" ? " · 指数" : ""}</span><span>${oneMinuteNote() || (state.chartMode === "timeshare" ? (stock.kind === "index" ? "左轴 点数 · 右轴 百分比" : "左轴 价格 · 右轴 百分比") : esc(indicatorSummary(state.chartPrefs)))}</span></div>
         </div>
         ${renderChartDock()}
       </div>

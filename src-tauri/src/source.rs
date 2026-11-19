@@ -377,6 +377,98 @@ async fn fetch_blocks(client: &Client, date: &str) -> Result<Vec<BlockInfo>> {
     Ok(out)
 }
 
+/// `high_days_value` packs `(board << 16) | days`; some mirrors omit it, in
+/// which case the `high_days` label is parsed instead.
+fn pool_board_days(item: &Value) -> (i64, i64, String) {
+    let raw_high = string(&item["high_days"]);
+    let hv = int(&item["high_days_value"]);
+    let (mut board, mut days) = if hv > 0 {
+        (((hv >> 16) & 0xffff) as i64, (hv & 0xffff) as i64)
+    } else {
+        (0, 0)
+    };
+    if board <= 0 {
+        board = parse_board(&raw_high);
+        days = parse_days(&raw_high).unwrap_or(board.max(1));
+    }
+    board = board.max(1);
+    days = days.max(1);
+    let high_days = if raw_high.is_empty() { format!("{board}板") } else { raw_high };
+    (board, days, high_days)
+}
+
+/// Backfill one trade day into `limit_up_history`. Reuses [`fetch_pool`] so the
+/// URL, page size and field mask stay in a single place; pagination and the
+/// `status_code` check come along for free. The history endpoint has no block
+/// payload, so `streak` falls back to `board` — real consecutive boards are
+/// rebuilt from the date series by the strategy layer.
+pub async fn fetch_limit_history_day(client: &Client, date: &str) -> Result<Vec<db::LimitHistoryRow>> {
+    if !is_date(date) {
+        return Err(anyhow!("日期格式应为 YYYYMMDD"));
+    }
+    let pool = fetch_pool(client, date, "limit_up_pool", "330324").await?;
+    let mut out = Vec::with_capacity(pool.len());
+    for item in &pool {
+        let code = string(&item["code"]);
+        if code.is_empty() {
+            continue;
+        }
+        let (board, days, high_days) = pool_board_days(item);
+        out.push(db::LimitHistoryRow {
+            code,
+            name: string(&item["name"]),
+            board,
+            days,
+            streak: board,
+            high_days,
+            price: num(&item["latest"]),
+            change_rate: num(&item["change_rate"]),
+            turnover_rate: num(&item["turnover_rate"]),
+            seal_amount: num(&item["order_amount"]),
+            amount_est: num(&item["amount"]),
+            first_seal: int(&item["first_limit_up_time"]),
+            open_num: int(&item["open_num"]),
+            limit_type: string(&item["limit_up_type"]),
+            float_cap: num(&item["currency_value"]),
+            market: string(&item["market_type"]),
+            is_new: int(&item["is_new"]) != 0,
+        });
+    }
+    Ok(out)
+}
+
+/// Batch-quote today's limit-up codes and write the real traded amount back
+/// into `Stock.amount`. The pool feed lags intraday and often reports 0, and
+/// `seal_amount / amount` (封单比) is meaningless without it. Turnover is only
+/// taken from the quote when the pool feed supplied none. Batched at 60 codes
+/// per request, which both Tencent and Sina accept in one URL.
+async fn backfill_amounts(client: &Client, stocks: &mut [Stock]) -> usize {
+    let mut codes: Vec<String> = stocks.iter().map(|s| s.code.clone()).filter(|c| !c.is_empty()).collect();
+    codes.sort();
+    codes.dedup();
+    if codes.is_empty() {
+        return 0;
+    }
+    let mut filled = 0usize;
+    for chunk in codes.chunks(60) {
+        let Ok(quotes) = fetch_stock_quotes(client, chunk).await else {
+            continue;
+        };
+        for quote in quotes {
+            if let Some(stk) = stocks.iter_mut().find(|s| s.code == quote.code) {
+                if quote.amount > 0.0 {
+                    stk.amount = quote.amount;
+                    filled += 1;
+                }
+                if stk.turnover_rate <= 0.0 && quote.turnover > 0.0 {
+                    stk.turnover_rate = quote.turnover;
+                }
+            }
+        }
+    }
+    filled
+}
+
 pub async fn fetch_day(client: &Client, date: &str) -> Result<(DayPayload, Option<String>)> {
     if !is_date(date) {
         return Err(anyhow!("日期格式应为 YYYYMMDD"));
@@ -440,19 +532,7 @@ pub async fn fetch_day(client: &Client, date: &str) -> Result<(DayPayload, Optio
         if code.is_empty() {
             continue;
         }
-        let raw_high = string(&item["high_days"]);
-        let hv = int(&item["high_days_value"]);
-        let (mut board, mut days) = if hv > 0 {
-            (((hv >> 16) & 0xffff) as i64, (hv & 0xffff) as i64)
-        } else {
-            (0, 0)
-        };
-        if board <= 0 {
-            board = parse_board(&raw_high);
-            days = parse_days(&raw_high).unwrap_or(board.max(1));
-        }
-        board = board.max(1);
-        days = days.max(1);
+        let (board, days, high_days) = pool_board_days(&item);
         let mut streak = streak_map.get(&code).copied().unwrap_or(board);
         if streak <= 0 {
             streak = board;
@@ -470,11 +550,7 @@ pub async fn fetch_day(client: &Client, date: &str) -> Result<(DayPayload, Optio
             board,
             days,
             streak,
-            high_days: if raw_high.is_empty() {
-                format!("{board}板")
-            } else {
-                raw_high
-            },
+            high_days,
             price: num(&item["latest"]),
             change_rate: num(&item["change_rate"]),
             turnover_rate: num(&item["turnover_rate"]),
@@ -516,6 +592,16 @@ pub async fn fetch_day(client: &Client, date: &str) -> Result<(DayPayload, Optio
 
     if date == db::today_ymd() && spark_limit > 0 {
         refresh_hero_spark(client, &mut stocks, spark_limit).await;
+    }
+
+    // Real traded amount for today only: the pool feed reports 0 for most
+    // intraday rows, and the 封单比 rule needs a denominator. Historic days
+    // keep whatever the pool feed returned.
+    if date == db::today_ymd() {
+        let filled = backfill_amounts(client, &mut stocks).await;
+        if filled == 0 && !stocks.is_empty() {
+            warnings.push("成交额补齐未命中，封单比可能无法计算".into());
+        }
     }
 
     let mut open_limit: Vec<Stock> = open_pool.iter().filter_map(|v| aux_stock(v)).collect();
@@ -860,12 +946,24 @@ async fn fetch_tencent_minute_kline(client: &Client, symbol: &str) -> Result<(St
     }
 }
 
-pub async fn fetch_kline(client: &Client, code: &str, period: &str) -> Result<(String, Vec<KlineCandle>)> {
+pub async fn fetch_kline(
+    client: &Client,
+    code: &str,
+    period: &str,
+    allow_minute_fallback: bool,
+) -> Result<(String, Vec<KlineCandle>)> {
     match fetch_eastmoney_kline(client, code, period).await {
         Ok(data) => Ok(data),
         Err(primary) => {
             let fallback = match period {
-                "1m" => fetch_tencent_minute_kline(client, &stock_symbol(code)).await,
+                // Tencent's minute endpoint is a tick line, not OHLC. Using it
+                // for the K-line view produced open=high=low=close candles and
+                // stale flat charts, so 1m only falls back to a real cache. The
+                // timeshare view reads nothing but close, and may still use it.
+                "1m" if allow_minute_fallback => {
+                    fetch_tencent_minute_kline(client, &stock_symbol(code)).await
+                }
+                "1m" => Err(anyhow!("1分钟K线没有备用数据源")),
                 "day" | "week" | "month" => fetch_tencent_kline(client, code, period).await,
                 _ => Err(anyhow!("该周期没有备用K线源")),
             };
@@ -913,12 +1011,20 @@ async fn fetch_tencent_index_kline(client: &Client, sid: &str, period: &str) -> 
     parse_tencent_kline(&json, &symbol, tx_period)
 }
 
-pub async fn fetch_index_kline(client: &Client, sid: &str, period: &str) -> Result<(String, Vec<KlineCandle>)> {
+pub async fn fetch_index_kline(
+    client: &Client,
+    sid: &str,
+    period: &str,
+    allow_minute_fallback: bool,
+) -> Result<(String, Vec<KlineCandle>)> {
     match fetch_eastmoney_index_kline(client, sid, period).await {
         Ok(data) => Ok(data),
         Err(primary) => {
             let fallback = match period {
-                "1m" => fetch_tencent_minute_kline(client, &tencent_symbol(sid)).await,
+                "1m" if allow_minute_fallback => {
+                    fetch_tencent_minute_kline(client, &tencent_symbol(sid)).await
+                }
+                "1m" => Err(anyhow!("1分钟K线没有备用数据源")),
                 "day" | "week" | "month" => fetch_tencent_index_kline(client, sid, period).await,
                 _ => Err(anyhow!("该周期没有备用K线源")),
             };
@@ -956,6 +1062,9 @@ fn parse_tencent_line(symbol: &str, body: &str) -> Option<StockQuote> {
         .and_then(|v| v.split('/').nth(2))
         .and_then(|v| v.parse::<f64>().ok())
         .unwrap_or(0.0);
+    // Tencent only: `time + 8` is 换手率. Sina/EastMoney replies carry no
+    // turnover, so `StockQuote.turnover` stays 0 for those sources.
+    let turnover = pick(8);
     Some(StockQuote {
         code: fields.get(2).unwrap_or(&"").to_string(),
         symbol: symbol.to_string(),
@@ -969,7 +1078,7 @@ fn parse_tencent_line(symbol: &str, body: &str) -> Option<StockQuote> {
         pct,
         volume: fields.get(6).unwrap_or(&"0").parse::<f64>().unwrap_or(0.0),
         amount,
-        turnover: 0.0,
+        turnover,
         as_of: tx_time(fields.get(time).unwrap_or(&"")),
         source: "tencent".into(),
         stale: false,

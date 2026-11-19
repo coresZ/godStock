@@ -1,7 +1,9 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use reqwest::Client;
-use tauri::State;
+use tauri::{Emitter, State};
 
 use crate::db;
 use crate::models::*;
@@ -39,6 +41,23 @@ fn trim_to_last_day(candles: Vec<KlineCandle>) -> Vec<KlineCandle> {
         .into_iter()
         .filter(|candle| candle.date.starts_with(&day))
         .collect()
+}
+
+/// The old Tencent fallback turned quote ticks into `open=high=low=close`
+/// candles. Those ticks still carry a cumulative volume, so the diffed per-bar
+/// volume is *not* zero — the flat OHLC is the only reliable tell. Drop such a
+/// cache so it cannot masquerade as a 1-minute chart forever; a real bar has a
+/// high/low range larger than its close.
+fn drop_synthetic_1m(candles: Vec<KlineCandle>) -> Vec<KlineCandle> {
+    if !candles.is_empty()
+        && candles
+            .iter()
+            .all(|c| c.open == c.high && c.high == c.low && c.low == c.close)
+    {
+        Vec::new()
+    } else {
+        candles
+    }
 }
 
 fn index_name(code: &str) -> &'static str {
@@ -154,6 +173,7 @@ pub async fn get_kline(
     code: String,
     period: String,
     refresh: bool,
+    allow_minute_fallback: bool,
 ) -> Result<KlinePayload, String> {
     let code = code.trim().to_string();
     if code.len() != 6 || !code.chars().all(|c| c.is_ascii_digit()) {
@@ -186,8 +206,15 @@ pub async fn get_kline(
         };
         (loaded.0, name, loaded.2)
     };
-    let cached = if period == "1m" { trim_to_last_day(cached) } else { cached };
+    let cached = if period == "1m" {
+        drop_synthetic_1m(trim_to_last_day(cached))
+    } else {
+        cached
+    };
 
+    // Cache-first for every period, 1m included: the cache is what makes an
+    // offline / EastMoney-down session still readable, and `loadChart` kicks a
+    // `refresh=true` pass right after a cache hit (main.ts refreshChart).
     if !refresh && !cached.is_empty() {
         return Ok(KlinePayload {
             code,
@@ -201,14 +228,23 @@ pub async fn get_kline(
         });
     }
 
-    match source::fetch_kline(&state.client, &code, &period).await {
+    match source::fetch_kline(&state.client, &code, &period, allow_minute_fallback).await {
         Ok((name, candles)) => {
             let candles = if period == "1m" { trim_to_last_day(candles) } else { candles };
-            let mut conn = state_conn(&state)?;
-            if let Err(e) = db::save_klines(&mut conn, &code, &period, &name, &candles) {
-                eprintln!("save kline failed: {e:#}");
+            let name = if name.trim().is_empty() { cached_name.clone() } else { name };
+            let from_tencent_line = period == "1m"
+                && !candles.is_empty()
+                && candles
+                    .iter()
+                    .all(|c| c.open == c.high && c.high == c.low && c.low == c.close);
+            // Save whenever the bars are real: the 分时 view also warms the 1m
+            // cache this way. Only the Tencent tick line stays out of the DB.
+            if !from_tencent_line {
+                let mut conn = state_conn(&state)?;
+                if let Err(e) = db::save_klines(&mut conn, &code, &period, &name, &candles) {
+                    eprintln!("save kline failed: {e:#}");
+                }
             }
-            drop(conn);
             Ok(KlinePayload {
                 code,
                 name,
@@ -216,7 +252,7 @@ pub async fn get_kline(
                 latest_date: candles.last().map(|c| c.date.clone()).unwrap_or_default(),
                 candles,
                 prev_close,
-                source: "network".into(),
+                source: if from_tencent_line { "tencent".into() } else { "network".into() },
                 warning: None,
             })
         }
@@ -274,6 +310,7 @@ pub async fn get_index_kline(
     name: String,
     period: String,
     refresh: bool,
+    allow_minute_fallback: bool,
 ) -> Result<KlinePayload, String> {
     let secid = secid.trim().to_string();
     if !matches!(secid.as_str(), "1.000001" | "0.399001" | "0.399006") {
@@ -305,7 +342,11 @@ pub async fn get_index_kline(
         let loaded = db::load_klines(&conn, &secid, &period).map_err(|e| err(e))?;
         (loaded.0, loaded.1, loaded.2)
     };
-    let cached = if period == "1m" { trim_to_last_day(cached) } else { cached };
+    let cached = if period == "1m" {
+        drop_synthetic_1m(trim_to_last_day(cached))
+    } else {
+        cached
+    };
     if !refresh && !cached.is_empty() {
         return Ok(KlinePayload {
             code: secid,
@@ -318,14 +359,20 @@ pub async fn get_index_kline(
             warning: None,
         });
     }
-    match source::fetch_index_kline(&state.client, &secid, &period).await {
+    match source::fetch_index_kline(&state.client, &secid, &period, allow_minute_fallback).await {
         Ok((_name, candles)) => {
             let candles = if period == "1m" { trim_to_last_day(candles) } else { candles };
-            let mut conn = state_conn(&state)?;
-            if let Err(e) = db::save_klines(&mut conn, &secid, &period, "", &candles) {
-                eprintln!("save index kline failed: {e:#}");
+            let from_tencent_line = period == "1m"
+                && !candles.is_empty()
+                && candles
+                    .iter()
+                    .all(|c| c.open == c.high && c.high == c.low && c.low == c.close);
+            if !from_tencent_line {
+                let mut conn = state_conn(&state)?;
+                if let Err(e) = db::save_klines(&mut conn, &secid, &period, "", &candles) {
+                    eprintln!("save index kline failed: {e:#}");
+                }
             }
-            drop(conn);
             Ok(KlinePayload {
                 code: secid,
                 name: display_name,
@@ -333,7 +380,7 @@ pub async fn get_index_kline(
                 latest_date: candles.last().map(|c| c.date.clone()).unwrap_or_default(),
                 candles,
                 prev_close,
-                source: "network".into(),
+                source: if from_tencent_line { "tencent".into() } else { "network".into() },
                 warning: None,
             })
         }
@@ -774,4 +821,345 @@ pub fn open_data_dir(state: State<'_, AppState>) -> Result<(), String> {
         let _ = path;
     }
     Ok(())
+}
+
+/* ————————————————— strategy（首板→二板） ————————————————— */
+
+/// Guards `sync_limit_history` against a second concurrent backfill — two
+/// 250-request storms against the same mirror would just rate-limit each other.
+static HISTORY_SYNCING: AtomicBool = AtomicBool::new(false);
+
+/// Releases the concurrency flag on every exit path, `?` returns included.
+struct SyncGuard;
+
+impl Drop for SyncGuard {
+    fn drop(&mut self) {
+        HISTORY_SYNCING.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Payload of the `history:progress` event.
+#[derive(serde::Serialize, Clone, Debug)]
+struct HistoryProgress {
+    done: i64,
+    total: i64,
+    current: String,
+}
+
+fn valid_date(raw: &str) -> Result<String, String> {
+    let date = raw.trim().to_string();
+    if date.len() != 8 || !date.chars().all(|c| c.is_ascii_digit()) {
+        return Err("日期格式应为 YYYYMMDD".into());
+    }
+    Ok(date)
+}
+
+fn finite(v: f64, fallback: f64) -> f64 {
+    if v.is_finite() {
+        v
+    } else {
+        fallback
+    }
+}
+
+/// Beijing wall clock `(hour, minute)` for a unix timestamp.
+fn beijing_clock(ts: i64) -> (i64, i64) {
+    let secs = (ts + 8 * 3600).rem_euclid(86_400);
+    (secs / 3600, (secs % 3600) / 60)
+}
+
+/// 09:25–09:30 inclusive, Beijing time.
+fn in_auction_window(ts: i64) -> bool {
+    let (hour, minute) = beijing_clock(ts);
+    let clock = hour * 60 + minute;
+    clock >= 9 * 60 + 25 && clock <= 9 * 60 + 30
+}
+
+#[tauri::command]
+pub async fn get_history_status(state: State<'_, AppState>) -> Result<HistoryStatus, String> {
+    let conn = state_conn(&state)?;
+    db::history_status(&conn, HISTORY_SYNCING.load(Ordering::SeqCst)).map_err(|e| err(e))
+}
+
+/// Backfill `days` trade days of `limit_up_pool` into `limit_up_history`.
+///
+/// Sequential on purpose: 250 days take 1–2 minutes, which is fine for a manual
+/// sync, and it keeps the mirror happy (no extra concurrency dependency). The
+/// day snapshot (`limit_up` / `day_snapshot`) is never touched.
+#[tauri::command]
+pub async fn sync_limit_history(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    days: i64,
+    refresh: bool,
+) -> Result<HistoryStatus, String> {
+    if HISTORY_SYNCING.swap(true, Ordering::SeqCst) {
+        let conn = state_conn(&state)?;
+        return db::history_status(&conn, true).map_err(|e| err(e));
+    }
+    let guard = SyncGuard;
+
+    let span = if days <= 0 { 250 } else { days.clamp(1, 500) as usize };
+    let today = db::today_ymd();
+    let targets: Vec<String> = {
+        let conn = state_conn(&state)?;
+        let all = db::trade_days_upto(&conn, &today, span).map_err(|e| err(e))?;
+        if refresh {
+            all
+        } else {
+            let done: std::collections::HashSet<String> = db::history_dates(&conn)
+                .map_err(|e| err(e))?
+                .into_iter()
+                .collect();
+            all.into_iter().filter(|d| !done.contains(d)).collect()
+        }
+    };
+    if targets.is_empty() {
+        drop(guard);
+        let conn = state_conn(&state)?;
+        return db::history_status(&conn, false).map_err(|e| err(e));
+    }
+
+    let total = targets.len() as i64;
+    let mut failed = 0usize;
+    let mut last_error = String::new();
+    for (index, date) in targets.iter().enumerate() {
+        match source::fetch_limit_history_day(&state.client, date).await {
+            Ok(rows) if !rows.is_empty() => {
+                // A fresh connection per day: `rusqlite::Connection` is not Sync
+                // and must never be held across an await point.
+                if let Ok(mut conn) = db::connect(&state.db_path) {
+                    if let Err(e) = db::save_limit_history(&mut conn, date, &rows) {
+                        eprintln!("save limit history failed: {e:#}");
+                    }
+                }
+            }
+            // No limit-up that day; leave the date uncovered so a later sync
+            // retries it instead of freezing an empty day forever.
+            Ok(_) => {}
+            Err(e) => {
+                failed += 1;
+                last_error = format!("{e:#}");
+                eprintln!("history {date} failed: {e:#}");
+            }
+        }
+        let done = index as i64 + 1;
+        if done % 5 == 0 || done == total {
+            let _ = app.emit(
+                "history:progress",
+                HistoryProgress {
+                    done,
+                    total,
+                    current: date.clone(),
+                },
+            );
+        }
+    }
+
+    if let Ok(conn) = db::connect(&state.db_path) {
+        let _ = db::set_setting(&conn, "limit_history_at", &db::now_ts().to_string());
+    }
+    drop(guard);
+    if failed > 0 && failed as i64 == total {
+        return Err(format!("历史回填全部失败 · {last_error}"));
+    }
+    let conn = state_conn(&state)?;
+    db::history_status(&conn, false).map_err(|e| err(e))
+}
+
+#[tauri::command]
+pub async fn get_strategy_profile(state: State<'_, AppState>) -> Result<StrategyProfile, String> {
+    let conn = state_conn(&state)?;
+    db::load_profile(&conn).map_err(|e| err(e))
+}
+
+#[tauri::command]
+pub async fn save_strategy_profile(
+    state: State<'_, AppState>,
+    profile: StrategyProfile,
+) -> Result<StrategyProfile, String> {
+    let def = StrategyProfile::default();
+    let mut p = profile;
+    p.max_price = finite(p.max_price, def.max_price).clamp(0.5, 1000.0);
+    p.max_float_cap = finite(p.max_float_cap, def.max_float_cap).clamp(1e8, 5e12);
+    p.min_limit_count = p.min_limit_count.clamp(0, 100);
+    p.limit_window_days = p.limit_window_days.clamp(20, 250);
+    p.max_streak = p.max_streak.clamp(1, 20);
+    p.max_gain_20d = finite(p.max_gain_20d, def.max_gain_20d).clamp(0.0, 1000.0);
+    p.min_sector_limit_ups = p.min_sector_limit_ups.clamp(0, 500);
+    p.min_sector_continuous = p.min_sector_continuous.clamp(0, 100);
+    p.min_seal_ratio = finite(p.min_seal_ratio, def.min_seal_ratio).clamp(0.0, 5.0);
+    p.max_open_num = p.max_open_num.clamp(0, 99);
+    p.latest_first_seal_minute = p.latest_first_seal_minute.clamp(-5, 240);
+    p.min_turnover = finite(p.min_turnover, def.min_turnover).clamp(0.0, 100.0);
+    p.top_n = p.top_n.clamp(1, 20);
+    p.updated_at = db::now_ts();
+    let conn = state_conn(&state)?;
+    db::save_profile(&conn, &p).map_err(|e| err(e))?;
+    Ok(p)
+}
+
+/// Read-only screening of a stored day snapshot. Never writes `limit_up`.
+#[tauri::command]
+pub async fn run_first_to_second(
+    state: State<'_, AppState>,
+    date: String,
+    refresh: Option<bool>,
+) -> Result<ScreenResult, String> {
+    let date = valid_date(&date)?;
+    let (day, profile, history) = {
+        let conn = state_conn(&state)?;
+        let day = db::load_day(&conn, &date)
+            .map_err(|e| err(e))?
+            .ok_or_else(|| "请先加载该交易日".to_string())?;
+        let profile = db::load_profile(&conn).map_err(|e| err(e))?;
+        let history = db::history_status(&conn, HISTORY_SYNCING.load(Ordering::SeqCst)).map_err(|e| err(e))?;
+        (day, profile, history)
+    };
+    Ok(crate::strategy::screen(
+        &state.client,
+        &state.db_path,
+        &date,
+        &day,
+        &profile,
+        history,
+        refresh.unwrap_or(false),
+    )
+    .await)
+}
+
+/// Snapshot the 09:25–09:30 auction prices of the day's first-board stocks.
+#[tauri::command]
+pub async fn capture_auction(state: State<'_, AppState>, date: String) -> Result<AuctionResult, String> {
+    let date = valid_date(&date)?;
+    if date != db::today_ymd() {
+        return Err("集合竞价只能在当天 09:25–09:30 采集".into());
+    }
+    let mut warnings: Vec<String> = Vec::new();
+    let (board, board_date) = {
+        let conn = state_conn(&state)?;
+        let prev = db::prev_trade_day(&conn, &date).map_err(|e| err(e))?;
+        let board_date = prev.clone().unwrap_or_else(|| date.clone());
+        let board = db::limit_up_first_board(&conn, &board_date).map_err(|e| err(e))?;
+        (board, board_date)
+    };
+    if board_date != date {
+        warnings.push(format!("竞价清单取 {board_date} 的首板，快照记在 {date}"));
+    }
+    let now = db::now_ts();
+    if board.is_empty() {
+        return Ok(AuctionResult {
+            date: date.clone(),
+            captured: false,
+            captured_at: 0,
+            in_window: in_auction_window(now),
+            rows: Vec::new(),
+            warnings: vec![format!("没有 {board_date} 的首板快照，请先加载该交易日")],
+        });
+    }
+
+    let mut names: HashMap<String, String> = HashMap::new();
+    for (code, name) in &board {
+        names.insert(code.clone(), name.clone());
+    }
+    let codes: Vec<String> = board.iter().map(|(code, _)| code.clone()).collect();
+    let prev_amounts = {
+        let conn = state_conn(&state)?;
+        db::prev_day_amounts(&conn).unwrap_or_default()
+    };
+
+    let mut quotes = Vec::new();
+    for chunk in codes.chunks(60) {
+        match source::fetch_stock_quotes(&state.client, chunk).await {
+            Ok(mut part) => quotes.append(&mut part),
+            Err(e) => warnings.push(format!("批量报价失败 · {e:#}")),
+        }
+    }
+    if quotes.is_empty() {
+        let mut all = warnings;
+        all.push("竞价报价不可用，未写入快照".into());
+        return Ok(AuctionResult {
+            date,
+            captured: false,
+            captured_at: 0,
+            in_window: in_auction_window(now),
+            rows: Vec::new(),
+            warnings: all,
+        });
+    }
+
+    let mut rows: Vec<AuctionRow> = Vec::with_capacity(quotes.len());
+    for quote in quotes {
+        let prev_close = quote.prev_close;
+        let auction_pct = if prev_close > 0.0 {
+            (quote.price / prev_close - 1.0) * 100.0
+        } else {
+            quote.pct
+        };
+        let amount_ratio = prev_amounts
+            .get(&quote.code)
+            .copied()
+            .filter(|v| *v > 0.0)
+            .map(|v| quote.amount / v);
+        rows.push(AuctionRow {
+            code: quote.code.clone(),
+            name: names.get(&quote.code).cloned().unwrap_or(quote.name),
+            price: quote.price,
+            prev_close,
+            open: quote.open,
+            volume: quote.volume,
+            amount: quote.amount,
+            turnover: quote.turnover,
+            auction_pct,
+            amount_ratio,
+            captured_at: now,
+        });
+    }
+    rows.sort_by(|a, b| {
+        b.auction_pct
+            .partial_cmp(&a.auction_pct)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.code.cmp(&b.code))
+    });
+    {
+        let mut conn = state_conn(&state)?;
+        db::save_auction(&mut conn, &date, &rows).map_err(|e| err(e))?;
+    }
+
+    let in_window = in_auction_window(now);
+    if !in_window {
+        warnings.push("当前不在 09:25–09:30 集合竞价窗口，采样值仅供参考".into());
+    }
+    // Read back what was stored so `capture_auction` and `get_auction` agree.
+    let stored = {
+        let conn = state_conn(&state)?;
+        db::load_auction(&conn, &date).map_err(|e| err(e))?
+    };
+    let rows = if stored.is_empty() { rows } else { stored };
+    Ok(AuctionResult {
+        date,
+        captured: !rows.is_empty(),
+        captured_at: now,
+        in_window,
+        rows,
+        warnings,
+    })
+}
+
+#[tauri::command]
+pub async fn get_auction(state: State<'_, AppState>, date: String) -> Result<AuctionResult, String> {
+    let date = valid_date(&date)?;
+    let rows = {
+        let conn = state_conn(&state)?;
+        db::load_auction(&conn, &date).map_err(|e| err(e))?
+    };
+    let captured_at = rows.iter().map(|r| r.captured_at).max().unwrap_or(0);
+    Ok(AuctionResult {
+        date,
+        captured: !rows.is_empty(),
+        captured_at,
+        in_window: captured_at > 0 && in_auction_window(captured_at),
+        rows,
+        warnings: Vec::new(),
+    })
 }
