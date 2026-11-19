@@ -951,20 +951,24 @@ pub async fn fetch_kline(
     code: &str,
     period: &str,
     allow_minute_fallback: bool,
-) -> Result<(String, Vec<KlineCandle>)> {
+) -> Result<(String, Vec<KlineCandle>, bool)> {
     match fetch_eastmoney_kline(client, code, period).await {
-        Ok(data) => Ok(data),
+        Ok((name, candles)) => Ok((name, candles, false)),
         Err(primary) => {
+            // The third element says "these bars are Tencent's tick line": the
+            // caller must not persist it as 1-minute candles.
             let fallback = match period {
                 // Tencent's minute endpoint is a tick line, not OHLC. Using it
                 // for the K-line view produced open=high=low=close candles and
                 // stale flat charts, so 1m only falls back to a real cache. The
                 // timeshare view reads nothing but close, and may still use it.
-                "1m" if allow_minute_fallback => {
-                    fetch_tencent_minute_kline(client, &stock_symbol(code)).await
-                }
+                "1m" if allow_minute_fallback => fetch_tencent_minute_kline(client, &stock_symbol(code))
+                    .await
+                    .map(|(name, candles)| (name, candles, true)),
                 "1m" => Err(anyhow!("1分钟K线没有备用数据源")),
-                "day" | "week" | "month" => fetch_tencent_kline(client, code, period).await,
+                "day" | "week" | "month" => fetch_tencent_kline(client, code, period)
+                    .await
+                    .map(|(name, candles)| (name, candles, false)),
                 _ => Err(anyhow!("该周期没有备用K线源")),
             };
             fallback.map_err(|e| anyhow!("{primary:#} · 备用源: {e:#}"))
@@ -1016,16 +1020,18 @@ pub async fn fetch_index_kline(
     sid: &str,
     period: &str,
     allow_minute_fallback: bool,
-) -> Result<(String, Vec<KlineCandle>)> {
+) -> Result<(String, Vec<KlineCandle>, bool)> {
     match fetch_eastmoney_index_kline(client, sid, period).await {
-        Ok(data) => Ok(data),
+        Ok((name, candles)) => Ok((name, candles, false)),
         Err(primary) => {
             let fallback = match period {
-                "1m" if allow_minute_fallback => {
-                    fetch_tencent_minute_kline(client, &tencent_symbol(sid)).await
-                }
+                "1m" if allow_minute_fallback => fetch_tencent_minute_kline(client, &tencent_symbol(sid))
+                    .await
+                    .map(|(name, candles)| (name, candles, true)),
                 "1m" => Err(anyhow!("1分钟K线没有备用数据源")),
-                "day" | "week" | "month" => fetch_tencent_index_kline(client, sid, period).await,
+                "day" | "week" | "month" => fetch_tencent_index_kline(client, sid, period)
+                    .await
+                    .map(|(name, candles)| (name, candles, false)),
                 _ => Err(anyhow!("该周期没有备用K线源")),
             };
             fallback.map_err(|e| anyhow!("{primary:#} · 备用源: {e:#}"))

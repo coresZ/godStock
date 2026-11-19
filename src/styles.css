@@ -2749,14 +2749,15 @@ select.select option { background: var(--surface); color: var(--text); }
   height: 5px;
   margin-top: 0;
   margin-left: -2.5px;
-  background: var(--surface);
-  border: 1px solid currentColor;
+  background: transparent;
+  border: 1px dashed currentColor;
   box-shadow: none;
-  opacity: .9;
+  color: var(--faint);
+  opacity: .8;
 }
-.tl-mark.is-secondary.up { color: var(--up); }
-.tl-mark.is-secondary.break { color: var(--brass); }
-.tl-mark.is-secondary:hover { transform: scale(1.45); z-index: 3; }
+.tl-mark.is-secondary.up,
+.tl-mark.is-secondary.break { color: var(--faint); }
+.tl-mark.is-secondary:hover { transform: scale(1.45); z-index: 3; opacity: 1; }
 .tl-mark.is-unknown { background: transparent; border-style: dashed; opacity: .62; }
 .tl-mark b {
   position: absolute;

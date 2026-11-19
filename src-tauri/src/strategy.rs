@@ -591,7 +591,7 @@ async fn kline_stats(
     }
     if candles.is_empty() {
         match source::fetch_kline(client, code, "day", false).await {
-            Ok((name, rows)) if !rows.is_empty() => {
+            Ok((name, rows, _)) if !rows.is_empty() => {
                 if let Ok(mut conn) = db::connect(db_path) {
                     if let Err(e) = db::save_klines(&mut conn, code, "day", &name, &rows) {
                         eprintln!("save strategy kline failed: {e:#}");

@@ -229,14 +229,9 @@ pub async fn get_kline(
     }
 
     match source::fetch_kline(&state.client, &code, &period, allow_minute_fallback).await {
-        Ok((name, candles)) => {
+        Ok((name, candles, from_tencent_line)) => {
             let candles = if period == "1m" { trim_to_last_day(candles) } else { candles };
             let name = if name.trim().is_empty() { cached_name.clone() } else { name };
-            let from_tencent_line = period == "1m"
-                && !candles.is_empty()
-                && candles
-                    .iter()
-                    .all(|c| c.open == c.high && c.high == c.low && c.low == c.close);
             // Save whenever the bars are real: the 分时 view also warms the 1m
             // cache this way. Only the Tencent tick line stays out of the DB.
             if !from_tencent_line {
@@ -360,13 +355,8 @@ pub async fn get_index_kline(
         });
     }
     match source::fetch_index_kline(&state.client, &secid, &period, allow_minute_fallback).await {
-        Ok((_name, candles)) => {
+        Ok((_name, candles, from_tencent_line)) => {
             let candles = if period == "1m" { trim_to_last_day(candles) } else { candles };
-            let from_tencent_line = period == "1m"
-                && !candles.is_empty()
-                && candles
-                    .iter()
-                    .all(|c| c.open == c.high && c.high == c.low && c.low == c.close);
             if !from_tencent_line {
                 let mut conn = state_conn(&state)?;
                 if let Err(e) = db::save_klines(&mut conn, &secid, &period, "", &candles) {

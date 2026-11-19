@@ -23,7 +23,8 @@ export function timelineExportText(): string {
   for (const group of ordered) {
     lines.push(`${timelineMinuteLabel(group.minute)}`);
     for (const e of group.items) {
-      const extra = e.note ? `  ${e.note}` : "";
+      const detail = e.hover ?? e.note;
+      const extra = detail ? `  ${detail}` : "";
       const prefix = e.secondary ? "补充 " : "";
       lines.push(`  ${prefix}${e.label ?? KIND_LABEL[e.kind]}  ${e.name} ${e.code}  ${e.clock}${e.approx ? "≈" : ""}  ${fmtPct(e.pct)}${extra}`);
     }
@@ -53,7 +54,10 @@ interface TimelineEvent {
   lead?: TimelineMark;
   /** 收盘涨停票盘中的首次开板，用空心点补在炸板泳道，不参与计数。 */
   openBreak?: TimelineMark;
+  /** 行内短说明：只放次数 / 状态，不放具体时间（时间走 hover）。 */
   note?: string;
+  /** hover 里才展示的完整说明，可以含推断时间。 */
+  hover?: string;
   timeUnknown?: boolean;
   /** 同一只票的辅助轨迹（首封 / 开板），只进日志与空心点，不计入主事件数。 */
   secondary?: boolean;
@@ -96,11 +100,12 @@ function buildEvents(): TimelineEvent[] {
     };
     if (s.openNum > 0) {
       const info = breakInfo(s);
+      event.note = `开板${s.openNum}次`;
       if (info) {
         event.openBreak = { minute: info.minute, clock: info.clock, approx: info.approx };
-        event.note = `开板${s.openNum}次 · 首开≈${info.clock}`;
+        event.hover = `开板${s.openNum}次 · 首开≈${info.clock}`;
       } else {
-        event.note = `开板${s.openNum}次 · 时间未知`;
+        event.hover = `开板${s.openNum}次 · 时间未知`;
       }
     }
     out.push(event);
@@ -123,11 +128,12 @@ function buildEvents(): TimelineEvent[] {
     if (s.firstSeal) {
       const leadMinute = timestampToTimelineMinute(s.firstSeal);
       event.lead = { minute: leadMinute, clock: fmtClock(s.firstSeal), approx: false };
-      event.note = `首封 ${fmtClock(s.firstSeal)}`;
+      event.hover = `首封 ${fmtClock(s.firstSeal)}`;
     }
     if (!info) {
       event.timeUnknown = true;
-      event.note = [event.note, `炸板时间未知 · 末封 ${clock}`].filter(Boolean).join(" · ");
+      event.note = "时间未知";
+      event.hover = [event.hover, `炸板时间未知 · 末封 ${clock}`].filter(Boolean).join(" · ");
     }
     out.push(event);
   }
@@ -156,7 +162,7 @@ function buildSecondaryEvents(events: TimelineEvent[]): TimelineEvent[] {
         pct: event.pct,
         secondary: true,
         label: "首封",
-        note: `后炸板${event.approx ? "≈" : ""}${event.clock}`,
+        hover: `后炸板${event.approx ? "≈" : ""}${event.clock}`,
       });
     }
     if (event.kind === "up" && event.openBreak) {
@@ -170,7 +176,7 @@ function buildSecondaryEvents(events: TimelineEvent[]): TimelineEvent[] {
         pct: event.pct,
         secondary: true,
         label: "开板",
-        note: `首开≈${event.openBreak.clock}`,
+        hover: `首开≈${event.openBreak.clock}`,
       });
     }
   }
@@ -197,7 +203,7 @@ function lane(kind: EventKind, events: TimelineEvent[]): string {
       : kind === "break"
         ? events
             .filter((e) => e.kind === "up" && e.openBreak)
-            .map((e) => ({ ...e.openBreak!, code: e.code, name: e.name, hint: e.note ?? "盘中开板", targetMinute: e.minute }))
+            .map((e) => ({ ...e.openBreak!, code: e.code, name: e.name, hint: e.hover ?? e.note ?? "盘中开板", targetMinute: e.minute }))
         : [];
   return `<div class="tl-lane">
     <div class="tl-lane-label ${kind}"><i></i>${KIND_LABEL[kind]}<span>${primary.length}</span></div>
@@ -205,7 +211,12 @@ function lane(kind: EventKind, events: TimelineEvent[]): string {
       ${rows
         .map((row) => {
           const pct = (row.minute / 255) * 100;
-          const names = row.items.map((e) => `${e.clock} ${e.name}${e.note ? ` · ${e.note}` : ""}`).join("\n");
+          const names = row.items
+            .map((e) => {
+              const detail = e.hover ?? e.note;
+              return `${e.clock} ${e.name}${detail ? ` · ${detail}` : ""}`;
+            })
+            .join("\n");
           const unknown = row.items.every((e) => e.timeUnknown);
           return `<button class="tl-mark ${kind}${unknown ? " is-unknown" : ""}" style="left:${pct.toFixed(3)}%" data-timeline-minute="${row.minute}" title="${esc(names)}" aria-label="${KIND_LABEL[kind]} ${row.items.length} 只">
             ${row.items.length > 1 ? `<b>${row.items.length}</b>` : ""}
@@ -274,7 +285,7 @@ export function renderTimeline(): string {
                   <span class="tl-log-line"></span>
                   <div class="tl-log-items">${g.items
                     .map(
-                      (e) => `<button class="tl-stock ${e.kind}${e.secondary ? " is-secondary" : ""}" data-stock-code="${e.code}" data-stock-name="${esc(e.name)}" title="${esc(`${e.name} ${e.code} · ${e.label ?? KIND_LABEL[e.kind]}${e.approx ? " (推断)" : ""}${e.note ? ` · ${e.note}` : ""}`)}">
+                      (e) => `<button class="tl-stock ${e.kind}${e.secondary ? " is-secondary" : ""}" data-stock-code="${e.code}" data-stock-name="${esc(e.name)}" title="${esc(`${e.name} ${e.code} · ${e.label ?? KIND_LABEL[e.kind]}${e.approx ? " (推断)" : ""}${(e.hover ?? e.note) ? ` · ${e.hover ?? e.note}` : ""}`)}">
                         <span class="tl-dot"></span>${esc(e.name)}<em>${e.label ?? KIND_LABEL[e.kind]}${e.timeUnknown ? "?" : e.approx ? "≈" : ""}</em>${e.note ? `<span class="tl-stock-note">${esc(e.note)}</span>` : ""}
                       </button>`,
                     )
