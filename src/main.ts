@@ -2,7 +2,7 @@ import "./styles.css";
 import { api } from "./lib/api";
 import { closeDropdown, initDropdowns } from "./lib/dropdown";
 import { availableDates, filterStocks, findStock, neighbors, parseHash, state } from "./lib/state";
-import type { ChartPrefs, ChartSelection, Period, SearchItem, StrategyProfile, StrategyStage, StrategyTab, Theme, ViewName, WatchStock } from "./lib/types";
+import type { ChartPrefs, ChartSelection, KlineCandle, Period, SearchItem, StrategyProfile, StrategyStage, StrategyTab, Theme, ViewName, WatchStock } from "./lib/types";
 import { esc, fmtBytes, fmtClock, fmtMoney, fmtPct, fmtPrice, fmtShortDate, icon, pctToneClass, relTime, tierName, weekdayFromYmd } from "./lib/ui";
 import { KLineChart } from "./chart";
 import { TimeShareChart } from "./timeshare";
@@ -2086,42 +2086,75 @@ function closeOverlay(): void {
 
 /* ————————————————— intraday overlay ————————————————— */
 
-function openIntradayAt(index: number): void {
+interface IntradaySelection {
+  index: number;
+  total: number;
+  date: string;
+  name: string;
+  codeLabel: string;
+  instrument: string;
+  prevClose: number | null;
+  candle: KlineCandle;
+}
+
+function intradaySelection(at: number): IntradaySelection | null {
   const data = state.chartData;
   const stock = state.chartStock;
-  if (!data || !stock || !data.candles.length) return;
-  const at = Math.max(0, Math.min(data.candles.length - 1, index));
-  const candle = data.candles[at];
+  if (!data || !stock || !data.candles.length) return null;
+  const index = Math.max(0, Math.min(data.candles.length - 1, at));
+  const candle = data.candles[index];
   const date = candle.date.slice(0, 10);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  return {
+    index,
+    total: data.candles.length,
+    date,
+    name: stock.name || data.name || stock.code,
+    codeLabel: stock.kind === "index" ? stock.code.split(".").pop() || stock.code : stock.code,
+    instrument: stock.kind === "index" ? stock.secid || stock.code : stock.code,
+    prevClose: index > 0 ? data.candles[index - 1].close : data.prevClose ?? null,
+    candle,
+  };
+}
+
+function openIntradayAt(index: number): void {
+  const sel = intradaySelection(index);
+  if (!sel) return;
+
+  // Switching days inside an open dialog must update only the dialog. Closing
+  // and rebuilding the overlay makes the whole page flash for a frame.
+  if (overlayKind === "intraday" && document.getElementById("intraday-overlay")) {
+    intradayIndex = sel.index;
+    intradayToken++;
+    syncIntradayHead(sel);
+    void loadIntraday(sel);
+    return;
+  }
+
   closeOverlay();
   overlayKind = "intraday";
-  intradayIndex = at;
+  intradayIndex = sel.index;
   intradayToken++;
-  const name = stock.name || data.name || stock.code;
-  const codeLabel = stock.kind === "index" ? stock.code.split(".").pop() || stock.code : stock.code;
-  const instrument = stock.kind === "index" ? stock.secid || stock.code : stock.code;
-  const prevClose = at > 0 ? data.candles[at - 1].close : data.prevClose ?? null;
-  const tone = pctToneClass(candle.pct);
+  const tone = pctToneClass(sel.candle.pct);
   overlayRoot.innerHTML = `<div class="overlay modal-overlay" id="intraday-overlay">
     <div class="overlay-panel intraday-panel" role="dialog" aria-label="当日分时">
       <header class="intraday-head">
         <div class="intraday-id">
-          <b>${esc(name)}</b>
-          <span>${esc(codeLabel)} · ${date}</span>
+          <b>${esc(sel.name)}</b>
+          <span id="intraday-date">${esc(sel.codeLabel)} · ${sel.date}</span>
         </div>
         <div class="intraday-quote">
-          <b class="${tone}">${fmtPrice(candle.close)}</b>
-          <span class="${tone}">${fmtPct(candle.pct)}</span>
+          <b id="intraday-price" class="${tone}">${fmtPrice(sel.candle.close)}</b>
+          <span id="intraday-pct" class="${tone}">${fmtPct(sel.candle.pct)}</span>
         </div>
         <div class="intraday-step">
-          <button class="btn-quiet" data-intraday-step="-1" title="上一交易日" ${at <= 0 ? "disabled" : ""}>${icon("chevronLeft", 15)}</button>
-          <button class="btn-quiet" data-intraday-step="1" title="下一交易日" ${at >= data.candles.length - 1 ? "disabled" : ""}>${icon("chevronRight", 15)}</button>
+          <button class="btn-quiet" data-intraday-step="-1" title="上一交易日 (←)" ${sel.index <= 0 ? "disabled" : ""}>${icon("chevronLeft", 15)}</button>
+          <button class="btn-quiet" data-intraday-step="1" title="下一交易日 (→)" ${sel.index >= sel.total - 1 ? "disabled" : ""}>${icon("chevronRight", 15)}</button>
         </div>
         <button class="intraday-close" data-intraday-close title="关闭 (Esc)" aria-label="关闭">${icon("close", 16)}</button>
       </header>
       <div class="intraday-stage" id="intraday-stage">
-        <div class="intraday-loading"><span class="loader"></span><span>正在读取 ${date} 的分时</span></div>
+        <div class="intraday-loading"><span class="loader"></span><span>正在读取 ${sel.date} 的分时</span></div>
       </div>
       <footer class="intraday-foot">
         <span id="intraday-source">数据读取中</span>
@@ -2140,32 +2173,58 @@ function openIntradayAt(index: number): void {
     const step = target.closest<HTMLElement>("[data-intraday-step]");
     if (step) {
       const delta = Number(step.dataset.intradayStep) || 0;
-      const next = intradayIndex + delta;
-      if (delta && next >= 0 && next < data.candles.length) openIntradayAt(next);
+      if (delta) openIntradayAt(intradayIndex + delta);
       return;
     }
     if (target === overlay) closeOverlay();
   });
-  void loadIntraday(instrument, date, prevClose);
+  void loadIntraday(sel);
 }
 
-async function loadIntraday(instrument: string, date: string, prevClose: number | null): Promise<void> {
+/** 只改弹窗头部与左右按钮状态，不重建 DOM。 */
+function syncIntradayHead(sel: IntradaySelection): void {
+  const date = document.getElementById("intraday-date");
+  if (date) date.textContent = `${sel.codeLabel} · ${sel.date}`;
+  const tone = pctToneClass(sel.candle.pct);
+  const price = document.getElementById("intraday-price");
+  if (price) {
+    price.textContent = fmtPrice(sel.candle.close);
+    price.className = tone;
+  }
+  const pct = document.getElementById("intraday-pct");
+  if (pct) {
+    pct.textContent = fmtPct(sel.candle.pct);
+    pct.className = tone;
+  }
+  const prev = document.querySelector<HTMLButtonElement>('[data-intraday-step="-1"]');
+  const next = document.querySelector<HTMLButtonElement>('[data-intraday-step="1"]');
+  if (prev) prev.disabled = sel.index <= 0;
+  if (next) next.disabled = sel.index >= sel.total - 1;
+  const source = document.getElementById("intraday-source");
+  if (source) source.textContent = "读取中…";
+}
+
+async function loadIntraday(sel: IntradaySelection): Promise<void> {
   const stock = state.chartStock;
   if (!stock) return;
   const token = intradayToken;
   try {
-    const payload = await api.getIntraday(instrument, date);
+    const payload = await api.getIntraday(sel.instrument, sel.date);
     if (token !== intradayToken || overlayKind !== "intraday") return;
     const stage = document.getElementById("intraday-stage");
     if (!stage) return;
-    intradayChart?.destroy();
-    stage.innerHTML = "";
-    intradayChart = new TimeShareChart(stage, {
-      axisMode: "full",
-      kind: stock.kind === "index" ? "index" : "stock",
-    });
-    const base = prevClose && prevClose > 0 ? prevClose : payload.prevClose ?? null;
-    intradayChart.setData(payload.candles, base);
+    const base = sel.prevClose && sel.prevClose > 0 ? sel.prevClose : payload.prevClose ?? null;
+    if (intradayChart) {
+      // Keep the canvas: switching days only swaps the series in place.
+      intradayChart.setData(payload.candles, base);
+    } else {
+      stage.innerHTML = "";
+      intradayChart = new TimeShareChart(stage, {
+        axisMode: "full",
+        kind: stock.kind === "index" ? "index" : "stock",
+      });
+      intradayChart.setData(payload.candles, base);
+    }
     const source = document.getElementById("intraday-source");
     if (source) {
       source.textContent =
@@ -2180,6 +2239,8 @@ async function loadIntraday(instrument: string, date: string, prevClose: number 
     if (token !== intradayToken || overlayKind !== "intraday") return;
     const stage = document.getElementById("intraday-stage");
     if (!stage) return;
+    intradayChart?.destroy();
+    intradayChart = null;
     stage.innerHTML = `<div class="intraday-empty">
       <b>这一天的分时暂时取不到</b>
       <span>${esc(messageFrom(e, "接口没有返回当天的分钟数据"))}</span>
@@ -2382,7 +2443,7 @@ function openSettings(): void {
         <div class="setting-section">
           <div class="setting-label">关于</div>
           <div class="about-text">
-            天梯 · A股涨停复盘　<b>v1.4.0</b><br />
+            天梯 · A股涨停复盘　<b>v1.4.1</b><br />
             涨停与板块数据来自同花顺公开接口，K线来自东方财富公开接口。<br />
             所有数据仅用于学习复盘，不构成投资建议。快捷键：<b>Ctrl K</b> 搜索，<b>← →</b> 切换交易日，<b>Esc</b> 关闭浮层。
           </div>
