@@ -392,6 +392,131 @@ pub async fn get_index_kline(
     }
 }
 
+/// Last daily close strictly before `date`, read from the day-line cache only.
+fn prior_day_close(conn: &rusqlite::Connection, code: &str, date: &str) -> Option<f64> {
+    let (days, _, _) = db::load_klines(conn, code, "day").ok()?;
+    days.iter()
+        .filter(|c| c.date.as_str() < date && c.close > 0.0)
+        .last()
+        .map(|c| c.close)
+}
+
+/// `prevClose` for the intraday payload: the source's own previous close when it
+/// has one (`Tencent.prec`), otherwise the last cached daily close before `date`.
+fn intraday_prev_close(state: &AppState, code: &str, date: &str, prec: Option<f64>) -> Option<f64> {
+    if let Some(value) = prec.filter(|value| *value > 0.0) {
+        return Some(value);
+    }
+    state_conn(state)
+        .ok()
+        .and_then(|conn| prior_day_close(&conn, code, date))
+}
+
+/// 1-minute time-share of one past trading day (double-click a daily candle).
+/// Reads and writes `intraday_bars` plus the existing day-line cache only — it
+/// never calls `save_day` and never writes `klines`.
+#[tauri::command]
+pub async fn get_intraday(
+    state: State<'_, AppState>,
+    code: String,
+    date: String,
+) -> Result<IntradayPayload, String> {
+    let code = code.trim().to_string();
+    let is_stock = code.len() == 6 && code.chars().all(|c| c.is_ascii_digit());
+    let is_secid = code.len() == 8
+        && code.is_ascii()
+        && code.as_bytes()[1] == b'.'
+        && code[0..1].bytes().all(|b| b.is_ascii_digit())
+        && code[2..].bytes().all(|b| b.is_ascii_digit());
+    if !is_stock && !is_secid {
+        return Err("股票代码应为 6 位数字或 secid".into());
+    }
+    let date = date.trim().to_string();
+    let date_ok = date.len() == 10
+        && date.bytes().enumerate().all(|(i, b)| {
+            if i == 4 || i == 7 {
+                b == b'-'
+            } else {
+                b.is_ascii_digit()
+            }
+        });
+    if !date_ok {
+        return Err("日期格式应为 YYYY-MM-DD".into());
+    }
+
+    let (name, cached) = {
+        let conn = state_conn(&state)?;
+        let name = db::stock_name(&conn, &code).unwrap_or_default();
+        let cached = db::load_intraday(&conn, &code, &date).unwrap_or_default();
+        (name, cached)
+    };
+    if !cached.is_empty() {
+        let prev_close = intraday_prev_close(&state, &code, &date, None);
+        return Ok(IntradayPayload {
+            code,
+            name,
+            date,
+            candles: cached,
+            prev_close,
+            source: "cache".into(),
+            warning: None,
+        });
+    }
+
+    if let Ok(bars) = source::fetch_em_intraday_day(&state.client, &code, &date).await {
+        if !bars.is_empty() {
+            if let Ok(mut conn) = state_conn(&state) {
+                if let Err(e) = db::save_intraday(&mut conn, &code, &date, &bars) {
+                    eprintln!("save intraday failed: {e:#}");
+                }
+            }
+            let prev_close = intraday_prev_close(&state, &code, &date, None);
+            return Ok(IntradayPayload {
+                code,
+                name,
+                date,
+                candles: bars,
+                prev_close,
+                source: "eastmoney".into(),
+                warning: None,
+            });
+        }
+    }
+
+    if let Ok(days) = source::fetch_tencent_intraday_days(&state.client, &code).await {
+        // Cache every returned day: the user usually double-clicks a neighbour
+        // next, and a warm cache spares another round trip.
+        if let Ok(mut conn) = state_conn(&state) {
+            for (day_date, _prec, bars) in &days {
+                if let Err(e) = db::save_intraday(&mut conn, &code, day_date, bars) {
+                    eprintln!("save intraday failed: {e:#}");
+                }
+            }
+        }
+        let mut hit: Option<(f64, Vec<KlineCandle>)> = None;
+        for (day_date, prec, bars) in &days {
+            if day_date == &date {
+                hit = Some((*prec, bars.clone()));
+                break;
+            }
+        }
+        if let Some((prec, bars)) = hit {
+            let prev_close = intraday_prev_close(&state, &code, &date, Some(prec));
+            return Ok(IntradayPayload {
+                code,
+                name,
+                date,
+                candles: bars,
+                prev_close,
+                source: "tencent".into(),
+                warning: None,
+            });
+        }
+    }
+
+    Err("该日分时不可用（东方财富分钟接口不可达时，腾讯仅提供近 5 个交易日）".into())
+}
+
 #[tauri::command]
 pub async fn get_indices(state: State<'_, AppState>, refresh: bool) -> Result<Vec<IndexQuote>, String> {
     if !refresh {

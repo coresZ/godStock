@@ -7,6 +7,7 @@ import type {
   HistoryStatus,
   IndexQuote,
   KlinePayload,
+  IntradayPayload,
   StockQuote,
   Period,
   ScreenResult,
@@ -61,6 +62,8 @@ export const api = {
       refresh,
       allowMinuteFallback,
     }),
+  getIntraday: (code: string, date: string) =>
+    call<IntradayPayload>("get_intraday", { code, date }),
   getIndices: (refresh = false) => call<IndexQuote[]>("get_indices", { refresh }),
   getStockQuote: (code: string) => call<StockQuote>("get_stock_quote", { code }),
   getStockQuotes: (codes: string[]) => call<StockQuote[]>("get_stock_quotes", { codes }),

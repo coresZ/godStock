@@ -196,6 +196,17 @@ pub fn init(path: &Path) -> Result<()> {
             PRIMARY KEY (code, period)
         );
 
+        CREATE TABLE IF NOT EXISTS intraday_bars (
+            code TEXT NOT NULL,
+            date TEXT NOT NULL,
+            time TEXT NOT NULL,
+            open REAL NOT NULL, high REAL NOT NULL, low REAL NOT NULL, close REAL NOT NULL,
+            volume REAL NOT NULL DEFAULT 0, amount REAL NOT NULL DEFAULT 0,
+            pct REAL NOT NULL DEFAULT 0, turnover REAL NOT NULL DEFAULT 0,
+            PRIMARY KEY (code, date, time)
+        );
+        CREATE INDEX IF NOT EXISTS idx_intraday_code_date ON intraday_bars(code, date);
+
         CREATE TABLE IF NOT EXISTS index_daily (
             code TEXT NOT NULL,
             date TEXT NOT NULL,
@@ -874,6 +885,65 @@ pub fn load_klines(conn: &Connection, code: &str, period: &str) -> Result<(Vec<K
     Ok((out, meta.as_ref().map(|m| m.0.clone()), meta.map(|m| m.1).unwrap_or(0)))
 }
 
+/// Rebuild one stock-day of 1-minute bars. `KlineCandle.date` is split into the
+/// `date` / `time` columns on write and joined back on read, so the payload the
+/// frontend sees keeps the same `"YYYY-MM-DD HH:MM"` shape as the K-line.
+pub fn load_intraday(conn: &Connection, code: &str, date: &str) -> Result<Vec<KlineCandle>> {
+    let mut out = Vec::new();
+    {
+        let mut st = conn.prepare(
+            "SELECT time,open,high,low,close,volume,amount,pct,turnover FROM intraday_bars
+             WHERE code=?1 AND date=?2 ORDER BY time ASC",
+        )?;
+        let iter = st.query_map(params![code, date], |r| {
+            Ok(KlineCandle {
+                date: format!("{} {}", date, r.get::<_, String>(0)?),
+                open: r.get(1)?,
+                high: r.get(2)?,
+                low: r.get(3)?,
+                close: r.get(4)?,
+                volume: r.get(5)?,
+                amount: r.get(6)?,
+                pct: r.get(7)?,
+                turnover: r.get(8)?,
+            })
+        })?;
+        for row in iter {
+            out.push(row?);
+        }
+    }
+    Ok(out)
+}
+
+/// Replace every bar of `(code, date)`. An empty slice is a no-op on purpose:
+/// a failed/empty refetch must never wipe a good cache.
+pub fn save_intraday(conn: &mut Connection, code: &str, date: &str, candles: &[KlineCandle]) -> Result<()> {
+    if candles.is_empty() {
+        return Ok(());
+    }
+    let tx = conn.transaction()?;
+    tx.execute("DELETE FROM intraday_bars WHERE code=?1 AND date=?2", params![code, date])?;
+    {
+        let mut st = tx.prepare(
+            r#"INSERT OR REPLACE INTO intraday_bars
+               (code,date,time,open,high,low,close,volume,amount,pct,turnover)
+               VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)"#,
+        )?;
+        for c in candles {
+            let Some(time) = c.date.split_whitespace().nth(1) else { continue };
+            if time.is_empty() {
+                continue;
+            }
+            st.execute(params![
+                code, date, time, c.open, c.high, c.low, c.close, c.volume, c.amount, c.pct,
+                c.turnover
+            ])?;
+        }
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 pub fn upsert_index_point(conn: &Connection, code: &str, date: &str, close: f64, pct: f64) -> Result<()> {
     if date.trim().is_empty() || close <= 0.0 {
         return Ok(());
@@ -1149,6 +1219,7 @@ pub fn clear_cache(conn: &mut Connection) -> Result<()> {
         "day_snapshot",
         "klines",
         "kline_meta",
+        "intraday_bars",
         "index_daily",
     ] {
         tx.execute(&format!("DELETE FROM {}", table), [])?;

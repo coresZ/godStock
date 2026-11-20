@@ -8,10 +8,13 @@ import type {
   ExcludedStock,
   HistoryStatus,
   IndexQuote,
+  IntradayPayload,
+  KlineCandle,
   KlinePayload,
   RuleCheck,
   ScreenCandidate,
   ScreenResult,
+  ScreenStock,
   SearchItem,
   StrategyProfile,
 } from "./types";
@@ -289,14 +292,51 @@ function buildScreen(date: string): ScreenResult {
   [...candidates]
     .sort((a, b) => b.score - a.score)
     .forEach((c, index) => {
-      c.rank = index + 1;
+      c.rank = index < strategyProfile.topN ? index + 1 : null;
     });
   const missingAmount = all.filter((c) => c.missing.includes("成交额"));
 
+  const stocks: ScreenStock[] = all.map((candidate, index) => {
+    const stock = findStock(SCREEN_SEEDS[index].code);
+    return {
+      code: candidate.code,
+      name: candidate.name,
+      price: candidate.stats.price,
+      changeRate: stock ? Math.round((9.6 + ((index * 7) % 40) / 100) * 100) / 100 : 0,
+      board: stock?.streak ?? 1,
+      firstSeal: candidate.stats.firstSeal,
+      score: candidate.score,
+      rank: candidate.rank,
+      firstBoard: true,
+      hardPassed: candidate.checks.filter((ch) => hardKeys.has(ch.key)).every((ch) => ch.passed === true),
+      candidate: candidate.checks.every((ch) => ch.passed === true),
+      failed: candidate.checks.filter((ch) => ch.passed !== true).map((ch) => ch.key),
+      pending: candidate.checks.some((ch) => ch.passed === null),
+    };
+  });
+  for (const item of EXCLUDED_STOCKS) {
+    stocks.push({
+      code: item.code,
+      name: item.name,
+      price: 0,
+      changeRate: 0,
+      board: 1,
+      firstSeal: 0,
+      score: 0,
+      rank: null,
+      firstBoard: true,
+      hardPassed: false,
+      candidate: false,
+      failed: item.failed,
+      pending: false,
+    });
+  }
+
   return {
     date,
-    universe: dayStocks.filter((s) => s.streak <= 1).length,
+    universe: stocks.filter((stock) => stock.firstBoard).length,
     hardPassed,
+    stocks,
     candidates: [...candidates].sort((a, b) => (a.rank ?? 99) - (b.rank ?? 99)),
     excluded: EXCLUDED_STOCKS,
     warnings: [
@@ -378,6 +418,49 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
       const period = (args?.period as string) || "day";
       const key = period in mockKlines ? period : "day";
       return mockKlines[key] as T;
+    }
+    case "get_intraday": {
+      const date = String(args?.date ?? "");
+      const source = mockKlines.day as KlinePayload;
+      const days = source.candles;
+      const found = days.findIndex((c) => c.date === date);
+      const at = found >= 0 ? found : days.length - 1;
+      const day = days[at];
+      const prev = at > 0 ? days[at - 1].close : day.open;
+      const times: number[] = [];
+      for (let m = 570; m <= 690; m += 1) times.push(m);
+      for (let m = 780; m <= 900; m += 1) times.push(m);
+      const span = day.close - day.open;
+      const amp = Math.max(Math.abs(span) * 0.5, day.close * 0.012);
+      const candles: KlineCandle[] = times.map((minute, i) => {
+        const t = i / Math.max(1, times.length - 1);
+        const price = day.open + span * t + Math.sin(t * Math.PI * 3.2) * amp + Math.sin(t * Math.PI * 7.4) * amp * 0.35;
+        const hh = String(Math.floor(minute / 60)).padStart(2, "0");
+        const mm = String(minute % 60).padStart(2, "0");
+        const profile = 0.12 + 2.4 * Math.abs(Math.sin(i * 1.7)) * Math.abs(Math.sin(i * 0.23 + 0.6)) * Math.exp(-((t - 0.45) ** 2) / 0.09);
+        const volume = Math.max(1, Math.round((day.volume / times.length) * profile));
+        return {
+          date: `${day.date} ${hh}:${mm}`,
+          open: price,
+          high: price,
+          low: price,
+          close: price,
+          volume,
+          amount: volume * 100 * price,
+          pct: prev > 0 ? (price / prev - 1) * 100 : 0,
+          turnover: 0,
+        };
+      });
+      const payload: IntradayPayload = {
+        code: source.code,
+        name: source.name,
+        date: day.date,
+        candles,
+        prevClose: prev,
+        source: "cache",
+        warning: null,
+      };
+      return payload as unknown as T;
     }
     case "get_indices":
       return mockIndices as T;

@@ -57,7 +57,7 @@ export function renderRail(): string {
         ${icon(state.theme === "dark" ? "sun" : "moon", 18)}
       </button>
       <button class="rail-tool" data-action="settings" title="设置" aria-label="设置">${icon("settings", 18)}</button>
-      <span class="rail-version">v1.3.1</span>
+      <span class="rail-version">v1.4.0</span>
     </div>
   </aside>`;
 }

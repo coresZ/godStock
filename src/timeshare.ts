@@ -492,8 +492,8 @@ export class TimeShareChart {
       c.stroke();
       c.fillStyle = zero ? this.colors.muted : this.colors.faint;
       // The last-price tags are drawn on top of the gutter; hide the label
-      // underneath so the two numbers do not overlap.
-      if (Math.abs(y - lastY) >= 10) {
+      // underneath so the two numbers do not overlap (tag box is 16px tall).
+      if (Math.abs(y - lastY) >= 15) {
         c.textAlign = "right";
         c.fillText(this.axisPrice(this.base * (1 + pct / 100)), left - 7, y);
         c.textAlign = "left";

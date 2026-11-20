@@ -103,6 +103,16 @@ export interface KlinePayload {
   warning: string | null;
 }
 
+export interface IntradayPayload {
+  code: string;
+  name: string;
+  date: string;
+  candles: KlineCandle[];
+  prevClose?: number | null;
+  source: string;
+  warning: string | null;
+}
+
 export interface IndexQuote {
   code: string;
   name: string;
@@ -246,6 +256,25 @@ export interface ExcludedStock {
   failed: string[];
 }
 
+export type StrategyStage = "firstBoard" | "hardPassed" | "candidates" | "watch";
+
+/** 涨停池里一只票当前所处阶段，供漏斗点击后展示。 */
+export interface ScreenStock {
+  code: string;
+  name: string;
+  price: number;
+  changeRate: number;
+  board: number;
+  firstSeal: number;
+  score: number;
+  rank: number | null;
+  firstBoard: boolean;
+  hardPassed: boolean;
+  candidate: boolean;
+  failed: string[];
+  pending: boolean;
+}
+
 export interface HistoryStatus {
   firstDate: string;
   lastDate: string;
@@ -259,6 +288,7 @@ export interface ScreenResult {
   date: string;
   universe: number;
   hardPassed: number;
+  stocks: ScreenStock[];
   candidates: ScreenCandidate[];
   excluded: ExcludedStock[];
   warnings: string[];

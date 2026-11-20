@@ -190,7 +190,7 @@ export function renderChartView(): string {
             ${state.chartLoading ? `<div class="chart-loading"><span class="loader"></span><span>正在刷新 ${state.chartMode === "timeshare" ? "分时" : esc(PERIOD_LABEL[state.chartPeriod] || "K线")}</span></div>` : ""}
             ${state.chartError ? `<div class="chart-error"><div class="error-title">K线没有加载</div><span>${esc(state.chartError)}</span>${state.chartPeriod === "1m" && state.chartMode !== "timeshare" ? `<span>1 分钟线没有备用源；可切到「分时」用腾讯点位看走势</span>` : ""}<button class="chart-retry" data-action="chart-retry">重新加载</button></div>` : ""}
           </div>
-          <div class="chart-footnote"><span>${sourceLabel()} · ${state.chartMode === "timeshare" ? "分时" : "前复权"}${stock.kind === "index" ? " · 指数" : ""}</span><span>${tencentLineNote() || oneMinuteNote() || (state.chartMode === "timeshare" ? (stock.kind === "index" ? "左轴 点数 · 右轴 百分比" : "左轴 价格 · 右轴 百分比") : esc(indicatorSummary(state.chartPrefs)))}</span></div>
+          <div class="chart-footnote"><span>${sourceLabel()} · ${state.chartMode === "timeshare" ? "分时" : "前复权"}${stock.kind === "index" ? " · 指数" : ""}${state.chartMode === "kline" && state.chartData?.candles.length ? " · 双击看分时" : ""}</span><span>${tencentLineNote() || oneMinuteNote() || (state.chartMode === "timeshare" ? (stock.kind === "index" ? "左轴 点数 · 右轴 百分比" : "左轴 价格 · 右轴 百分比") : esc(indicatorSummary(state.chartPrefs)))}</span></div>
         </div>
         ${renderChartDock()}
       </div>

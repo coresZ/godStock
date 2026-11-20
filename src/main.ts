@@ -2,8 +2,8 @@ import "./styles.css";
 import { api } from "./lib/api";
 import { closeDropdown, initDropdowns } from "./lib/dropdown";
 import { availableDates, filterStocks, findStock, neighbors, parseHash, state } from "./lib/state";
-import type { ChartPrefs, ChartSelection, Period, SearchItem, StrategyProfile, StrategyTab, Theme, ViewName, WatchStock } from "./lib/types";
-import { esc, fmtBytes, fmtClock, fmtMoney, fmtShortDate, icon, relTime, tierName, weekdayFromYmd } from "./lib/ui";
+import type { ChartPrefs, ChartSelection, Period, SearchItem, StrategyProfile, StrategyStage, StrategyTab, Theme, ViewName, WatchStock } from "./lib/types";
+import { esc, fmtBytes, fmtClock, fmtMoney, fmtPct, fmtPrice, fmtShortDate, icon, pctToneClass, relTime, tierName, weekdayFromYmd } from "./lib/ui";
 import { KLineChart } from "./chart";
 import { TimeShareChart } from "./timeshare";
 import { chartSwitchContext, indicatorSummary, normalizeChartRange, renderChartDock, renderChartHead, renderChartToolbar, renderChartView, updateChartDock } from "./views/chart";
@@ -15,6 +15,9 @@ import { renderTimeline, timelineExportText } from "./views/timeline";
 
 let chart: KLineChart | null = null;
 let timeShareChart: TimeShareChart | null = null;
+let intradayChart: TimeShareChart | null = null;
+let intradayToken = 0;
+let intradayIndex = 0;
 let dayToken = 0;
 let chartToken = 0;
 let indicesLoading = false;
@@ -34,6 +37,7 @@ let overlayKind:
   | "group-dialog"
   | "group-delete"
   | "indicator"
+  | "intraday"
   | "context"
   | null = null;
 let overlayRoot!: HTMLElement;
@@ -938,6 +942,7 @@ function mountChart(): void {
     period: state.chartPeriod,
     range: state.chartRange,
     ...state.chartPrefs,
+    onCandleDblClick: (index) => openIntradayAt(index),
   });
   chart.setData(state.chartData.candles);
 }
@@ -993,6 +998,13 @@ function bindGlobals(): void {
       if (!overlayKind) openSearch();
     } else if (e.key === "Escape" && overlayKind) {
       closeOverlay();
+    } else if (overlayKind === "intraday" && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+      const total = state.chartData?.candles.length ?? 0;
+      const next = intradayIndex + (e.key === "ArrowLeft" ? -1 : 1);
+      if (next >= 0 && next < total) {
+        e.preventDefault();
+        openIntradayAt(next);
+      }
     } else if (e.key === "Escape" && (state.profileOpen || state.strategyDetailCode)) {
       state.profileOpen = false;
       state.strategyDetailCode = null;
@@ -1125,6 +1137,16 @@ function handleClick(e: MouseEvent): void {
     }
     return;
   }
+  const strategyStage = target.closest<HTMLElement>("[data-strategy-stage]");
+  if (strategyStage) {
+    const stage = strategyStage.dataset.strategyStage as StrategyStage | undefined;
+    if (stage && stage !== state.strategyStage) {
+      state.strategyStage = stage;
+      state.strategyShowExcluded = false;
+      updateStrategyStage();
+    }
+    return;
+  }
   if (target.closest("[data-strategy-run]")) {
     void runStrategyScreen();
     return;
@@ -1195,6 +1217,11 @@ function handleClick(e: MouseEvent): void {
   const candidateRow = target.closest<HTMLElement>("[data-candidate-code]");
   if (candidateRow) {
     openChart(candidateRow.dataset.candidateCode!, candidateRow.dataset.candidateName || "");
+    return;
+  }
+  const stageStock = target.closest<HTMLElement>("[data-strategy-stock]");
+  if (stageStock) {
+    openChart(stageStock.dataset.strategyStock!, stageStock.dataset.strategyName || "");
     return;
   }
   const indexEl = target.closest<HTMLElement>("[data-index-secid]");
@@ -1441,6 +1468,12 @@ function handleKeydown(e: KeyboardEvent): void {
   if (row && (e.key === "Enter" || e.key === " ")) {
     e.preventDefault();
     openChart(row.dataset.stockCode!, row.dataset.stockName || "");
+    return;
+  }
+  const stageRow = target.closest<HTMLElement>("tr[data-strategy-stock]");
+  if (stageRow && (e.key === "Enter" || e.key === " ")) {
+    e.preventDefault();
+    openChart(stageRow.dataset.strategyStock!, stageRow.dataset.strategyName || "");
   }
 }
 
@@ -2040,10 +2073,120 @@ function closeOverlay(): void {
   if (!overlayKind) return;
   closeDropdown();
   hideHover();
+  if (overlayKind === "intraday") {
+    intradayChart?.destroy();
+    intradayChart = null;
+    intradayToken++;
+  }
   overlayKind = null;
   state.searchOpen = false;
   state.settingsOpen = false;
   if (overlayRoot) overlayRoot.innerHTML = "";
+}
+
+/* ————————————————— intraday overlay ————————————————— */
+
+function openIntradayAt(index: number): void {
+  const data = state.chartData;
+  const stock = state.chartStock;
+  if (!data || !stock || !data.candles.length) return;
+  const at = Math.max(0, Math.min(data.candles.length - 1, index));
+  const candle = data.candles[at];
+  const date = candle.date.slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
+  closeOverlay();
+  overlayKind = "intraday";
+  intradayIndex = at;
+  intradayToken++;
+  const name = stock.name || data.name || stock.code;
+  const codeLabel = stock.kind === "index" ? stock.code.split(".").pop() || stock.code : stock.code;
+  const instrument = stock.kind === "index" ? stock.secid || stock.code : stock.code;
+  const prevClose = at > 0 ? data.candles[at - 1].close : data.prevClose ?? null;
+  const tone = pctToneClass(candle.pct);
+  overlayRoot.innerHTML = `<div class="overlay modal-overlay" id="intraday-overlay">
+    <div class="overlay-panel intraday-panel" role="dialog" aria-label="当日分时">
+      <header class="intraday-head">
+        <div class="intraday-id">
+          <b>${esc(name)}</b>
+          <span>${esc(codeLabel)} · ${date}</span>
+        </div>
+        <div class="intraday-quote">
+          <b class="${tone}">${fmtPrice(candle.close)}</b>
+          <span class="${tone}">${fmtPct(candle.pct)}</span>
+        </div>
+        <div class="intraday-step">
+          <button class="btn-quiet" data-intraday-step="-1" title="上一交易日" ${at <= 0 ? "disabled" : ""}>${icon("chevronLeft", 15)}</button>
+          <button class="btn-quiet" data-intraday-step="1" title="下一交易日" ${at >= data.candles.length - 1 ? "disabled" : ""}>${icon("chevronRight", 15)}</button>
+        </div>
+        <button class="intraday-close" data-intraday-close title="关闭 (Esc)" aria-label="关闭">${icon("close", 16)}</button>
+      </header>
+      <div class="intraday-stage" id="intraday-stage">
+        <div class="intraday-loading"><span class="loader"></span><span>正在读取 ${date} 的分时</span></div>
+      </div>
+      <footer class="intraday-foot">
+        <span id="intraday-source">数据读取中</span>
+        <span>双击 K 线任意一天可切换</span>
+      </footer>
+    </div>
+  </div>`;
+  const overlay = document.getElementById("intraday-overlay");
+  if (!overlay) return;
+  overlay.addEventListener("click", (e) => {
+    const target = e.target as HTMLElement;
+    if (target.closest("[data-intraday-close]")) {
+      closeOverlay();
+      return;
+    }
+    const step = target.closest<HTMLElement>("[data-intraday-step]");
+    if (step) {
+      const delta = Number(step.dataset.intradayStep) || 0;
+      const next = intradayIndex + delta;
+      if (delta && next >= 0 && next < data.candles.length) openIntradayAt(next);
+      return;
+    }
+    if (target === overlay) closeOverlay();
+  });
+  void loadIntraday(instrument, date, prevClose);
+}
+
+async function loadIntraday(instrument: string, date: string, prevClose: number | null): Promise<void> {
+  const stock = state.chartStock;
+  if (!stock) return;
+  const token = intradayToken;
+  try {
+    const payload = await api.getIntraday(instrument, date);
+    if (token !== intradayToken || overlayKind !== "intraday") return;
+    const stage = document.getElementById("intraday-stage");
+    if (!stage) return;
+    intradayChart?.destroy();
+    stage.innerHTML = "";
+    intradayChart = new TimeShareChart(stage, {
+      axisMode: "full",
+      kind: stock.kind === "index" ? "index" : "stock",
+    });
+    const base = prevClose && prevClose > 0 ? prevClose : payload.prevClose ?? null;
+    intradayChart.setData(payload.candles, base);
+    const source = document.getElementById("intraday-source");
+    if (source) {
+      source.textContent =
+        payload.source === "tencent"
+          ? "腾讯分时点位 · 仅收盘价"
+          : payload.source === "cache"
+            ? "本地缓存"
+            : "东方财富 1 分钟";
+    }
+    if (payload.warning) toast(payload.warning);
+  } catch (e) {
+    if (token !== intradayToken || overlayKind !== "intraday") return;
+    const stage = document.getElementById("intraday-stage");
+    if (!stage) return;
+    stage.innerHTML = `<div class="intraday-empty">
+      <b>这一天的分时暂时取不到</b>
+      <span>${esc(messageFrom(e, "接口没有返回当天的分钟数据"))}</span>
+    </div>`;
+    const source = document.getElementById("intraday-source");
+    if (source) source.textContent = "没有数据";
+  }
 }
 
 function openSearch(): void {
@@ -2239,7 +2382,7 @@ function openSettings(): void {
         <div class="setting-section">
           <div class="setting-label">关于</div>
           <div class="about-text">
-            天梯 · A股涨停复盘　<b>v1.3.1</b><br />
+            天梯 · A股涨停复盘　<b>v1.4.0</b><br />
             涨停与板块数据来自同花顺公开接口，K线来自东方财富公开接口。<br />
             所有数据仅用于学习复盘，不构成投资建议。快捷键：<b>Ctrl K</b> 搜索，<b>← →</b> 切换交易日，<b>Esc</b> 关闭浮层。
           </div>

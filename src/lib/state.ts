@@ -15,6 +15,7 @@ import type {
   Stock,
   StockQuote,
   StrategyProfile,
+  StrategyStage,
   StrategyTab,
   Theme,
   ViewName,
@@ -86,6 +87,7 @@ export interface AppState {
   auctionLoading: boolean;
   strategyDetailCode: string | null;
   strategyShowExcluded: boolean;
+  strategyStage: StrategyStage;
 }
 
 const DEFAULT_CHART_RANGES: Record<Period, number> = {
@@ -215,6 +217,7 @@ export const state: AppState = {
   auctionLoading: false,
   strategyDetailCode: null,
   strategyShowExcluded: false,
+  strategyStage: "watch",
 };
 
 export function parseHash(): { view: ViewName; code: string } {

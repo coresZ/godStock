@@ -8,7 +8,9 @@ import type {
   RuleCheck,
   ScreenCandidate,
   ScreenResult,
+  ScreenStock,
   StrategyProfile,
+  StrategyStage,
   StrategyTab,
 } from "../lib/types";
 import {
@@ -18,7 +20,9 @@ import {
   fmtDotDate,
   fmtMoney,
   fmtPct,
+  fmtPrice,
   icon,
+  pctToneClass,
   relTime,
 } from "../lib/ui";
 import { renderViewHead } from "./common";
@@ -251,8 +255,8 @@ function renderFirstToSecond(v: StrategyView): string {
 
   return `${warnings.length ? renderNotes(warnings, Boolean(error)) : ""}
     ${history && !historyReady(history) ? renderHistoryHint(history) : ""}
-    ${renderFunnel(screen, v.profile ?? null)}
-    ${renderCandidateBlock(screen, v)}`;
+    ${renderFunnel(screen, v.profile ?? null, v.strategyStage ?? "watch")}
+    ${renderStageBlock(screen, v)}`;
 }
 
 function renderHistoryHint(history: HistoryStatus): string {
@@ -331,46 +335,144 @@ function renderScreenSkeleton(): string {
   </div>`;
 }
 
-function renderFunnel(screen: ScreenResult, profile: StrategyProfile | null): string {
+function renderFunnel(screen: ScreenResult, profile: StrategyProfile | null, stage: StrategyStage): string {
   const topN = profile && profile.topN > 0 ? profile.topN : screen.candidates.length;
-  const watch = Math.min(screen.candidates.length, topN);
-  const steps = [
-    { label: "首板", value: screen.universe, note: "当日首封", target: false },
-    { label: "硬过滤", value: screen.hardPassed, note: "硬条件全部通过", target: false },
-    { label: "候选", value: screen.candidates.length, note: "全部规则通过", target: false },
-    { label: "观察", value: watch, note: `规则分前 ${topN || "—"}`, target: true },
+  const ranked = screen.stocks ? screen.stocks.filter((s) => s.rank != null).length : 0;
+  const watch = ranked || Math.min(screen.candidates.length, topN);
+  const steps: Array<{ key: StrategyStage; label: string; value: number; note: string }> = [
+    { key: "firstBoard", label: "首板", value: screen.universe, note: "当日首封" },
+    { key: "hardPassed", label: "硬过滤", value: screen.hardPassed, note: "硬条件全部通过" },
+    { key: "candidates", label: "候选", value: screen.candidates.length, note: "全部规则通过" },
+    { key: "watch", label: "观察", value: watch, note: `规则分前 ${topN || "—"}` },
   ];
-  return `<div class="strategy-funnel" role="group" aria-label="筛选漏斗">
+  return `<div class="strategy-funnel" role="tablist" aria-label="筛选漏斗 · 点按查看该阶段个股">
     ${steps
       .map(
-        (step, i) => `${i > 0 ? `<span class="strategy-funnel-line" aria-hidden="true"></span>` : ""}<div class="strategy-funnel-step${step.target ? " is-target" : ""}">
+        (step, i) => `${i > 0 ? `<span class="strategy-funnel-line" aria-hidden="true"></span>` : ""}<button type="button" role="tab" aria-selected="${stage === step.key}" class="strategy-funnel-step${stage === step.key ? " is-active" : ""}${step.key === "watch" ? " is-target" : ""}" data-strategy-stage="${step.key}" title="查看${step.label}阶段的个股">
         <span class="strategy-funnel-label">${step.label}</span>
         <b class="strategy-funnel-num">${step.value}</b>
         <span class="strategy-funnel-note">${esc(step.note)}</span>
-      </div>`,
+      </button>`,
       )
       .join("")}
   </div>`;
 }
 
-function renderCandidateBlock(screen: ScreenResult, v: StrategyView): string {
+function renderStageBlock(screen: ScreenResult, v: StrategyView): string {
+  const stage = v.strategyStage ?? "watch";
+  if (stage === "candidates" || stage === "watch") return renderCandidateBlock(screen, v, stage);
+  return renderStageStocks(screen, stage);
+}
+
+function renderCandidateBlock(screen: ScreenResult, v: StrategyView, stage: "candidates" | "watch"): string {
   const profile = v.profile ?? null;
   const topN = profile && profile.topN > 0 ? profile.topN : 0;
-  const rows = topN > 0 ? screen.candidates.slice(0, topN) : screen.candidates;
+  const rows = stage === "watch" && topN > 0 ? screen.candidates.slice(0, topN) : screen.candidates;
   const excludedOn = v.strategyShowExcluded === true;
   const truncated = rows.length < screen.candidates.length;
+  const title = stage === "watch" ? "观察" : "候选";
 
   const head = `<div class="strategy-list-head">
-    <h3 class="strategy-list-title">候选</h3>
-    <span class="strategy-list-sub">按规则分降序${truncated ? ` · 仅显示前 ${rows.length} 只` : ""}</span>
+    <h3 class="strategy-list-title">${title}</h3>
+    <span class="strategy-list-sub">${stage === "watch" ? "按规则分降序" : "全部规则通过 · 按规则分降序"}${truncated ? ` · 仅显示前 ${rows.length} 只` : ""}</span>
     <button class="chip ${excludedOn ? "active" : ""}" data-strategy-show-excluded aria-pressed="${excludedOn}">
       ${icon(excludedOn ? "eyeOff" : "eye", 12)}<span>${excludedOn ? "隐藏被剔除" : "显示被剔除"}</span><span class="count">${screen.excluded.length}</span>
     </button>
   </div>`;
 
   const body = rows.length ? renderCandidateTable(rows) : renderNoCandidate(screen);
-  const rest = rows.length ? screen.candidates.slice(rows.length) : [];
+  const rest = stage === "watch" && rows.length ? screen.candidates.slice(rows.length) : [];
   return `<div class="strategy-list">${head}${body}${renderRest(rest)}${excludedOn ? renderExcluded(screen.excluded) : ""}</div>`;
+}
+
+/** 首板 / 硬过滤阶段：整池个股 + 当前结果（观察 / 候选 / 卡在哪条规则）。 */
+function renderStageStocks(screen: ScreenResult, stage: "firstBoard" | "hardPassed"): string {
+  const rows = (screen.stocks ?? [])
+    .filter((s) => (stage === "firstBoard" ? s.firstBoard : s.hardPassed))
+    .sort((a, b) => {
+      if (stage === "hardPassed") {
+        const ar = a.rank ?? 999;
+        const br = b.rank ?? 999;
+        if (ar !== br) return ar - br;
+        if (b.score !== a.score) return b.score - a.score;
+      }
+      const at = a.firstSeal || Number.MAX_SAFE_INTEGER;
+      const bt = b.firstSeal || Number.MAX_SAFE_INTEGER;
+      if (at !== bt) return at - bt;
+      return a.code.localeCompare(b.code);
+    });
+  const title = stage === "firstBoard" ? "首板" : "硬过滤";
+  const sub =
+    stage === "firstBoard"
+      ? "当日首封，按首封时间排列 · 点按查看 K 线"
+      : "通过全部硬条件，含未过封板质量的票 · 点按查看 K 线";
+  return `<div class="strategy-list">
+    <div class="strategy-list-head">
+      <h3 class="strategy-list-title">${title}</h3>
+      <span class="strategy-list-sub">${sub}</span>
+      <span class="strategy-stage-count">${rows.length} 只</span>
+    </div>
+    ${rows.length ? renderStageTable(rows) : renderStageEmpty(stage)}
+  </div>`;
+}
+
+function renderStageEmpty(stage: "firstBoard" | "hardPassed"): string {
+  return `<div class="strategy-empty">
+    <b>${stage === "firstBoard" ? "这一天没有首板" : "没有股票通过硬过滤"}</b>
+    <span>${stage === "firstBoard" ? "当日涨停池里没有首封的票，换一个交易日或重新运行筛选。" : "可以从「首板」阶段回看，或放宽参数后重新运行。"}</span>
+  </div>`;
+}
+
+function renderStageTable(rows: ScreenStock[]): string {
+  return `<table class="pool-table strategy-table strategy-stage-table">
+    <colgroup>
+      <col class="c-stock" style="width:26%" />
+      <col class="c-pct" style="width:10%" />
+      <col class="c-price" style="width:11%" />
+      <col class="c-board" style="width:8%" />
+      <col class="c-seal-time" style="width:10%" />
+      <col class="c-score" style="width:8%" />
+      <col class="c-result" style="width:27%" />
+    </colgroup>
+    <thead>
+      <tr>
+        <th class="c-stock">股票</th>
+        <th class="num c-pct">涨幅</th>
+        <th class="num c-price">现价</th>
+        <th class="num c-board">连板</th>
+        <th class="num c-seal-time">首封</th>
+        <th class="num c-score">规则分</th>
+        <th class="c-result">结果</th>
+      </tr>
+    </thead>
+    <tbody>${rows.map(stageRow).join("")}</tbody>
+  </table>`;
+}
+
+function stageRow(stock: ScreenStock): string {
+  return `<tr class="strategy-row strategy-stage-row" data-strategy-stock="${esc(stock.code)}" data-strategy-name="${esc(stock.name)}" tabindex="0" aria-label="查看 ${esc(stock.name)} K线">
+    <td class="stock-cell c-stock"><div class="pool-stock"><span class="pool-stock-name">${esc(stock.name)}</span><span class="pool-stock-code">${esc(stock.code)}</span></div></td>
+    <td class="num c-pct"><span class="strategy-num ${pctToneClass(stock.changeRate)}">${fmtPct(stock.changeRate)}</span></td>
+    <td class="num c-price"><span class="strategy-num">${fmtPrice(stock.price)}</span></td>
+    <td class="num c-board"><span class="strategy-num">${stock.board}</span><span class="strategy-unit">板</span></td>
+    <td class="num c-seal-time"><span class="strategy-num">${stock.firstSeal ? fmtClock(stock.firstSeal) : "—"}</span></td>
+    <td class="num c-score"><span class="strategy-num">${stock.score > 0 ? Math.round(stock.score) : "—"}</span></td>
+    <td class="c-result">${stageResultCell(stock)}</td>
+  </tr>`;
+}
+
+function stageResultCell(stock: ScreenStock): string {
+  if (stock.pending) return `<span class="strategy-stage-tag is-pending">待补</span>`;
+  if (stock.rank != null) return `<span class="strategy-stage-tag is-watch">观察 #${stock.rank}</span>`;
+  if (stock.candidate) return `<span class="strategy-stage-tag is-candidate">候选</span>`;
+  if (stock.failed.length) {
+    const shown = stock.failed.slice(0, 3);
+    const extra = stock.failed.length - shown.length;
+    return `<span class="strategy-fail-chips">${shown
+      .map((key) => `<span>${esc(ruleLabel(key))}</span>`)
+      .join("")}${extra > 0 ? `<span class="more">+${extra}</span>` : ""}</span>`;
+  }
+  return `<span class="strategy-stage-tag">通过</span>`;
 }
 
 /** 观察名单之外的候选：低调纸片，点按仍可查看逐条规则。 */

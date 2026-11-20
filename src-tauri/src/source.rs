@@ -946,6 +946,103 @@ async fn fetch_tencent_minute_kline(client: &Client, symbol: &str) -> Result<(St
     }
 }
 
+/// 东财 1 分钟线，按自然日取。可能被接口忽略 beg/end，调用方必须按日期过滤。
+pub async fn fetch_em_intraday_day(client: &Client, code: &str, date: &str) -> Result<Vec<KlineCandle>> {
+    let beg: String = date.chars().filter(|c| c.is_ascii_digit()).collect();
+    if beg.len() != 8 {
+        return Err(anyhow!("日期格式应为 YYYY-MM-DD"));
+    }
+    // Indices are addressed by secid ("1.000001"); stocks by bare code.
+    let sid = if code.contains('.') { code.to_string() } else { secid(code) };
+    let url = format!(
+        "https://push2his.eastmoney.com/api/qt/stock/kline/get?secid={sid}&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61&klt=1&fqt=1&beg={beg}&end={beg}&lmt=1000"
+    );
+    let json = get_json(client, &url, EM_REFERER).await?;
+    let (_, candles) = parse_kline_json(&json["data"])?;
+    let mut bars: Vec<KlineCandle> = candles
+        .into_iter()
+        .filter(|c| c.date.starts_with(date))
+        .collect();
+    bars.sort_by(|a, b| a.date.cmp(&b.date));
+    if bars.len() < 30 {
+        return Err(anyhow!("东财该日分时为空"));
+    }
+    Ok(bars)
+}
+
+/// 腾讯 day/query：一次返回最近 5 个交易日的分时，返回 (日期, 昨收, bars)。
+pub async fn fetch_tencent_intraday_days(
+    client: &Client,
+    code: &str,
+) -> Result<Vec<(String, f64, Vec<KlineCandle>)>> {
+    let symbol = if code.contains('.') {
+        tencent_symbol(code)
+    } else {
+        stock_symbol(code)
+    };
+    let url = format!("https://web.ifzq.gtimg.cn/appstock/app/day/query?code={symbol}");
+    let json = get_json(client, &url, TX_REFERER).await?;
+    let Some(days) = json["data"][symbol.as_str()]["data"].as_array() else {
+        return Err(anyhow!("腾讯分时为空"));
+    };
+    let mut out: Vec<(String, f64, Vec<KlineCandle>)> = Vec::new();
+    for day in days {
+        let raw_date = string(&day["date"]);
+        if !is_date(&raw_date) {
+            continue;
+        }
+        let date = format!("{}-{}-{}", &raw_date[0..4], &raw_date[4..6], &raw_date[6..8]);
+        let prec = num(&day["prec"]);
+        let Some(lines) = day["data"].as_array() else { continue };
+        let mut bars: Vec<KlineCandle> = Vec::new();
+        let mut prev_volume = 0.0;
+        let mut prev_amount = 0.0;
+        let mut prev_price = 0.0;
+        for line in lines {
+            let Some(text) = line.as_str() else { continue };
+            let parts: Vec<&str> = text.split_whitespace().collect();
+            if parts.len() < 4 {
+                continue;
+            }
+            let Some(hhmm) = parts.first() else { continue };
+            let price = parts[1].parse::<f64>().unwrap_or(0.0);
+            let volume = parts[2].parse::<f64>().unwrap_or(0.0);
+            let amount = parts[3].parse::<f64>().unwrap_or(0.0);
+            if price <= 0.0 || hhmm.len() != 4 {
+                continue;
+            }
+            let clock = hhmm.parse::<i32>().unwrap_or(0);
+            if !((930..=1130).contains(&clock) || (1300..=1500).contains(&clock)) {
+                continue;
+            }
+            let base = if prev_price > 0.0 { prev_price } else { price };
+            bars.push(KlineCandle {
+                date: format!("{date} {}:{}", &hhmm[0..2], &hhmm[2..4]),
+                open: price,
+                high: price,
+                low: price,
+                close: price,
+                volume: (volume - prev_volume).max(0.0),
+                amount: (amount - prev_amount).max(0.0),
+                pct: if base > 0.0 { (price / base - 1.0) * 100.0 } else { 0.0 },
+                turnover: 0.0,
+            });
+            prev_volume = volume;
+            prev_amount = amount;
+            prev_price = price;
+        }
+        if bars.len() < 30 {
+            continue;
+        }
+        out.push((date, prec, bars));
+    }
+    if out.is_empty() {
+        Err(anyhow!("腾讯分时为空"))
+    } else {
+        Ok(out)
+    }
+}
+
 pub async fn fetch_kline(
     client: &Client,
     code: &str,

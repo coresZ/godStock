@@ -131,6 +131,7 @@ pub fn run() {
             commands::get_day,
             commands::get_kline,
             commands::get_index_kline,
+            commands::get_intraday,
             commands::get_indices,
             commands::get_stock_quote,
             commands::get_stock_quotes,

@@ -113,6 +113,22 @@ pub struct KlinePayload {
     pub warning: Option<String>,
 }
 
+/// One trading day of 1-minute bars for a single stock. `candles[].date` keeps
+/// the `KlineCandle` convention (`"YYYY-MM-DD HH:MM"`), sorted ascending and
+/// covering only the requested `date`.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct IntradayPayload {
+    pub code: String,
+    pub name: String,
+    pub date: String,
+    pub candles: Vec<KlineCandle>,
+    #[serde(default)]
+    pub prev_close: Option<f64>,
+    pub source: String,
+    pub warning: Option<String>,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct IndexQuote {
@@ -315,6 +331,36 @@ pub struct ExcludedStock {
     pub failed: Vec<String>,
 }
 
+/// One stock of the day's limit-up pool plus the screening stage it reached.
+/// `ScreenResult::excluded` is truncated, so the funnel tabs read their full
+/// lists from here instead.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ScreenStock {
+    pub code: String,
+    pub name: String,
+    pub price: f64,
+    /// 当日涨跌幅（%），来自 `Stock.change_rate`。
+    pub change_rate: f64,
+    /// 连板数，来自 `Stock.board`。
+    pub board: i64,
+    /// 首次封板时间戳（`Stock.first_seal`），0 表示未知。
+    pub first_seal: i64,
+    /// 规则分；只有候选会 > 0，其余为 0。
+    pub score: f64,
+    pub rank: Option<i64>,
+    /// 是否首板（`first_board_check` 通过）。
+    pub first_board: bool,
+    /// 是否通过全部硬过滤（含 f4）。
+    pub hard_passed: bool,
+    /// 是否通过全部硬过滤 + 封板质量，即进入候选。
+    pub candidate: bool,
+    /// 失败规则的 key（与 `ExcludedStock.failed` 同一套 key），未失败为空。
+    pub failed: Vec<String>,
+    /// 是否有规则因数据不足未判定。
+    pub pending: bool,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryStatus {
@@ -337,6 +383,8 @@ pub struct ScreenResult {
     pub warnings: Vec<String>,
     pub history: HistoryStatus,
     pub has_amount: bool,
+    /// 当日涨停池里每一只票所处阶段；前端按 firstBoard / hardPassed / candidate / rank 过滤。
+    pub stocks: Vec<ScreenStock>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

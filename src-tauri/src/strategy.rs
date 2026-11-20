@@ -618,6 +618,25 @@ pub async fn screen(
     refresh: bool,
 ) -> ScreenResult {
     let mut warnings: Vec<String> = Vec::new();
+    // Every pool stock gets a row up front (day order preserved) so the funnel
+    // tabs can show all four stages; each step below only updates its own row.
+    let mut stocks: Vec<ScreenStock> = day
+        .stocks
+        .iter()
+        .map(|stk| ScreenStock {
+            code: stk.code.clone(),
+            name: stk.name.clone(),
+            price: stk.price,
+            change_rate: stk.change_rate,
+            board: stk.board,
+            first_seal: stk.first_seal,
+            ..ScreenStock::default()
+        })
+        .collect();
+    let mut index_of: HashMap<&str, usize> = HashMap::with_capacity(day.stocks.len());
+    for (i, stk) in day.stocks.iter().enumerate() {
+        index_of.entry(stk.code.as_str()).or_insert(i);
+    }
     let mut ctx = match load_ctx(db_path, date, profile) {
         Ok(c) => c,
         Err(e) => {
@@ -653,7 +672,8 @@ pub async fn screen(
     let mut hard_candidates: Vec<usize> = Vec::new();
     for (i, stk) in day.stocks.iter().enumerate() {
         let first_board = first_board_check(stk, &ctx);
-        if first_board.passed == Some(true) {
+        let is_first_board = first_board.passed == Some(true);
+        if is_first_board {
             first_board_count += 1;
         }
         let checks = vec![
@@ -669,6 +689,13 @@ pub async fn screen(
             .filter(|c| c.passed == Some(false))
             .map(|c| c.key.clone())
             .collect();
+        let has_pending = checks.iter().any(|c| c.passed.is_none());
+        {
+            let slot = &mut stocks[i];
+            slot.first_board = is_first_board;
+            slot.failed = failed.clone();
+            slot.pending = has_pending;
+        }
         if !failed.is_empty() {
             excluded.push(ExcludedStock {
                 code: stk.code.clone(),
@@ -677,7 +704,7 @@ pub async fn screen(
             });
             continue;
         }
-        if checks.iter().any(|c| c.passed.is_none()) {
+        if has_pending {
             pending += 1;
             continue;
         }
@@ -695,6 +722,7 @@ pub async fn screen(
         }
         let f4 = f4_check(&row, profile, ctx.hist_days > 0);
         if f4.passed == Some(false) {
+            stocks[i].failed = vec![f4.key.clone()];
             excluded.push(ExcludedStock {
                 code: stk.code.clone(),
                 name: stk.name.clone(),
@@ -703,9 +731,11 @@ pub async fn screen(
             continue;
         }
         if f4.passed.is_none() {
+            stocks[i].pending = true;
             pending += 1;
             continue;
         }
+        stocks[i].hard_passed = true;
         final_pass.push((i, row));
     }
     let hard_passed = final_pass.len() as i64;
@@ -726,8 +756,13 @@ pub async fn screen(
             .filter(|c| c.passed != Some(true))
             .map(|c| c.key.clone())
             .collect();
+        let has_pending = checks.iter().any(|c| c.passed.is_none());
         if !failed.is_empty() {
             dropped_by_quality += 1;
+            stocks[i].failed = failed.clone();
+            if has_pending {
+                stocks[i].pending = true;
+            }
             excluded.push(ExcludedStock {
                 code: stk.code.clone(),
                 name: stk.name.clone(),
@@ -741,6 +776,8 @@ pub async fn screen(
             .map(|c| c.key.clone())
             .collect();
         let score = score_candidate(&stats, profile);
+        stocks[i].candidate = true;
+        stocks[i].score = score;
         candidates.push(ScreenCandidate {
             code: stk.code.clone(),
             name: stk.name.clone(),
@@ -770,6 +807,10 @@ pub async fn screen(
     let top_n = profile.top_n.clamp(1, 50) as usize;
     for (i, c) in candidates.iter_mut().enumerate() {
         c.rank = if i < top_n { Some(i as i64 + 1) } else { None };
+        // `candidates` is sorted now, so the rank goes back through the code index.
+        if let Some(&idx) = index_of.get(c.code.as_str()) {
+            stocks[idx].rank = c.rank;
+        }
     }
     excluded.sort_by(|a, b| a.code.cmp(&b.code));
     excluded.truncate(EXCLUDED_LIMIT);
@@ -796,5 +837,6 @@ pub async fn screen(
         warnings,
         history,
         has_amount: day.stocks.iter().any(|s| s.amount > 0.0),
+        stocks,
     }
 }

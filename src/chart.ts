@@ -15,6 +15,8 @@ export interface KLineIndicatorConfig {
 interface ChartOptions extends KLineIndicatorConfig {
   period: Period;
   range: number;
+  /** 双击某根 K 线时回调，参数是该根在 `candles` 里的下标。 */
+  onCandleDblClick?: (index: number) => void;
 }
 
 interface LineSeries {
@@ -95,6 +97,7 @@ export class KLineChart {
   private kdjD: number[] = [];
   private kdjJ: number[] = [];
   private lastLegendIndex = -2;
+  private onCandleDblClick?: (index: number) => void;
 
   constructor(container: HTMLElement, opts: ChartOptions) {
     this.container = container;
@@ -111,6 +114,7 @@ export class KLineChart {
       kdjD: opts.kdjD,
     };
     this.colors = this.readColors();
+    this.onCandleDblClick = opts.onCandleDblClick;
 
     container.classList.add("kline-host");
     container.innerHTML = `
@@ -276,6 +280,8 @@ export class KLineChart {
     this.canvas.style.width = `${w}px`;
     this.canvas.style.height = `${h}px`;
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    // Keep hit testing usable before the first animation frame paints.
+    this.layout = this.calcLayout(w, h);
     this.draw();
   }
 
@@ -379,7 +385,12 @@ export class KLineChart {
 
     this.canvas.addEventListener(
       "dblclick",
-      () => {
+      (e) => {
+        const index = this.candleIndexAtEvent(e);
+        if (index != null && this.onCandleDblClick) {
+          this.onCandleDblClick(index);
+          return;
+        }
         this.resetView();
         this.draw();
       },
@@ -446,7 +457,7 @@ export class KLineChart {
     this.draw();
   }
 
-  private localX(e: PointerEvent | WheelEvent): number {
+  private localX(e: MouseEvent | WheelEvent): number {
     const rect = this.canvas.getBoundingClientRect();
     return e.clientX - rect.left;
   }
@@ -462,6 +473,19 @@ export class KLineChart {
     if (!slot) return null;
     const raw = this.viewStart + Math.floor((x - this.layout.left) / slot);
     return clamp(raw, this.viewStart, this.viewStart + this.viewCount - 1);
+  }
+
+  /** 双击落点对应的 candle 下标：落点必须在价格/成交量绘图区内。 */
+  private candleIndexAtEvent(e: MouseEvent): number | null {
+    if (!this.layout || !this.candles.length) return null;
+    const x = this.localX(e);
+    const left = this.layout.left;
+    const right = this.layout.width - this.layout.axisRight;
+    if (x < left || x > right) return null;
+    const ratio = this.indexAtX(x);
+    if (ratio == null) return null;
+    const index = Math.round(ratio);
+    return index >= 0 && index < this.candles.length ? index : null;
   }
 
   private updateHover(x: number, draw = true): void {
