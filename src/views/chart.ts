@@ -1,6 +1,7 @@
-import { esc, fmtAmount, fmtClock, fmtMoney, fmtPct, fmtPrice, fmtShortDate, icon, tierName, tone } from "../lib/ui";
+import { esc, fmtAmount, fmtClock, fmtMoney, fmtPct, fmtPrice, fmtShortDate, icon, relTime, tierName, tone } from "../lib/ui";
 import { filterStocks, findStock, state } from "../lib/state";
-import type { ChartPrefs, KlineCandle, Period, StockQuote, WatchStock } from "../lib/types";
+import { iwcPctClass, iwcPctText, iwcSortedStocks, iwcSortLabel } from "../lib/iwc";
+import type { ChartPrefs, IwcPlate, IwcStock, KlineCandle, Period, StockQuote, WatchStock } from "../lib/types";
 
 const PRIMARY_PERIODS: Array<{ value: Period; label: string }> = [
   { value: "1m", label: "1分" },
@@ -60,6 +61,7 @@ export function normalizeChartRange(period: Period, current: number): number {
 
 function marketName(code: string, kind?: string): string {
   if (kind === "index") return "指数";
+  if (code.startsWith("5") || code.startsWith("15") || code.startsWith("16") || code.startsWith("18")) return "场内基金";
   if (code.startsWith("688")) return "科创板";
   if (code.startsWith("6") || code.startsWith("9")) return "沪市";
   if (code.startsWith("300") || code.startsWith("301")) return "创业板";
@@ -67,7 +69,7 @@ function marketName(code: string, kind?: string): string {
 }
 
 function marketShort(code: string, market = ""): string {
-  if (market === "1" || code.startsWith("6") || code.startsWith("9")) return "沪";
+  if (market === "1" || code.startsWith("6") || code.startsWith("5") || code.startsWith("9")) return "沪";
   if (code.startsWith("300") || code.startsWith("301")) return "创";
   if (code.startsWith("688")) return "科";
   return "深";
@@ -508,18 +510,105 @@ export function renderWatchDock(): string {
     <div class="watch-dock-foot">
       <span class="watch-foot-hint">同组去重 · 右键分配分组</span>
     </div>
+    <button class="watch-iwc-link" data-dock-tab="iwc" title="查看同花顺 / 问财自选板块（只读同步）">
+      ${icon("eye", 12)}<span>同花顺自选${state.iwcSnapshot?.plates.length ? ` · ${state.iwcSnapshot.plates.length} 板块` : ""}</span>${icon("chevronRight", 12)}
+    </button>
+  </div>`;
+}
+
+/** K 线右侧「同花顺」页签：只读展示已同步的自选板块，点板块展开成分股。 */
+function renderIwcDock(): string {
+  const logged = Boolean(state.iwcAuth?.iwcLoggedIn ?? state.iwcSnapshot?.userId);
+  const snapshot = state.iwcSnapshot;
+  const plates = snapshot?.plates ?? [];
+  const members = plates.reduce((n, plate) => n + plate.members.length, 0);
+  const syncing = state.iwcSyncing;
+  const warnings = snapshot?.warnings?.length ?? 0;
+  const openSn = state.iwcPlateSn;
+  const loginPending = state.iwcLoginPending;
+
+  const head = `<div class="watch-dock-head">
+      <div><h3>同花顺</h3><p>${logged ? `${plates.length} 个板块 · ${members} 只` : "只读同步 · 未登录"}</p></div>
+      <div class="watch-dock-tools">
+        <button class="iwc-sort-btn" data-iwc-sort title="切换成分股排序：默认 / 涨幅高→低 / 低→高">${iwcSortLabel()}</button>
+        <button class="dock-icon" data-iwc-sync ${!logged || syncing ? "disabled" : ""} title="${logged ? "从同花顺 / 问财同步自选" : "登录后才能同步"}">${icon("refresh", 14)}</button>
+        <button class="dock-icon accent" data-iwc-login title="${logged ? "重新打开同花顺登录窗口" : "登录同花顺 / 问财"}">${icon("eye", 15)}</button>
+      </div>
+    </div>`;
+
+  let body: string;
+  if (!logged) {
+    body = `<div class="watch-empty iwc-dock-gate">
+      <b>登录同花顺 / 问财</b>
+      <span>登录后可在这里直接看自己的自选板块与成分股；只读同步，不保存密码、不回写网站。</span>
+      <button class="watch-add-row" data-iwc-login>${icon(loginPending ? "activity" : "eye", 13)} ${loginPending ? "等待登录…" : "登录同花顺"}</button>
+      ${loginPending ? `<span class="iwc-dock-note">已打开登录窗口，登录成功后自动同步。</span>` : ""}
+    </div>`;
+  } else if (state.iwcLoading && !snapshot) {
+    body = `<div class="watch-empty"><b>正在读取自选</b><span>稍等片刻…</span></div>`;
+  } else if (!snapshot) {
+    body = `<div class="watch-empty">
+      <b>还没有同步</b>
+      <span>点右上角同步按钮，从同花顺 / 问财拉取你的自选板块。</span>
+      <button class="watch-add-row" data-iwc-sync>${icon("refresh", 13)} 立即同步</button>
+    </div>`;
+  } else if (!plates.length) {
+    body = `<div class="watch-empty"><b>暂无自选板块</b><span>在问财网站创建板块后再同步。</span></div>`;
+  } else {
+    body = `<div class="watch-list iwc-dock-list">${plates.map((plate) => renderIwcDockPlate(plate, plate.sn === openSn)).join("")}</div>`;
+  }
+
+  return `<div class="watch-dock iwc-dock">
+    ${head}
+    ${body}
+    <div class="watch-dock-foot">
+      <span class="watch-foot-hint">只读同步${snapshot?.syncedAt ? ` · ${relTime(snapshot.syncedAt)}` : ""}${warnings ? ` · 提示 ${warnings} 条` : ""}</span>
+    </div>
+  </div>`;
+}
+
+function renderIwcDockPlate(plate: IwcPlate, open: boolean): string {
+  const head = `<div class="iwc-dock-plate-head ${open ? "is-open" : ""}">
+    <button class="iwc-dock-plate-toggle" data-iwc-plate="${esc(plate.sn)}" title="展开 / 收起「${esc(plate.name)}」">
+      <span class="iwc-dock-plate-name">${esc(plate.name)}${plate.condition ? `<i class="oh-tag is-board">动态</i>` : ""}</span>
+      <span class="iwc-dock-plate-count">${plate.members.length} 只 ${icon(open ? "chevronDown" : "chevronRight", 12)}</span>
+    </button>
+    <button class="dock-icon iwc-dock-import" data-iwc-import="plate:${esc(plate.sn)}" ${plate.members.length ? "" : "disabled"} title="把「${esc(plate.name)}」的 ${plate.members.length} 只成分股导入本地自选">${icon("download", 13)}</button>
+  </div>`;
+  if (!open) return `<div class="iwc-dock-plate">${head}</div>`;
+  const rows = iwcSortedStocks(plate.members)
+    .map((stock) => {
+      const quote = watchQuote(stock.code);
+      const pct = iwcPctText(stock.code);
+      const active = state.chartStock?.code === stock.code ? " is-active" : "";
+      return `<button class="watch-row iwc-dock-row${active}" data-stock-code="${esc(stock.code)}" data-stock-name="${esc(stock.name || stock.code)}" data-iwc-stock="${esc(stock.code)}" data-iwc-name="${esc(stock.name)}" data-iwc-market="${esc(stock.market)}" title="查看 ${esc(stock.name || stock.code)} K线 · 右键加入自选">
+        <span class="watch-row-main"><b>${esc(stock.name || stock.code)}</b><em>${esc(stock.code)}</em></span>
+        <span class="watch-row-quote ${pct === "—" ? quote?.cls || "text-flat" : iwcPctClass(stock.code)}">${pct === "—" ? quote?.text || "—" : pct}</span>
+        <span class="watch-row-market">${marketShort(stock.code, stock.market)}</span>
+        <span class="watch-row-go">${icon("arrowUpRight", 12)}</span>
+      </button>`;
+    })
+    .join("");
+  return `<div class="iwc-dock-plate">
+    ${head}
+    <div class="iwc-dock-members">
+      ${rows || `<div class="watch-empty"><b>该板块暂无成分股</b></div>`}
+    </div>
   </div>`;
 }
 
 export function renderChartDock(): string {
   const active = state.chartDock;
   const watchCount = state.watchGroups.find((g) => g.id === state.watchGroupId)?.stocks.length ?? state.watchGroups[0]?.stocks.length ?? 0;
+  const iwcCount = state.iwcSnapshot?.plates.length ?? 0;
+  const content = active === "insight" ? renderChartInsight() : active === "iwc" ? renderIwcDock() : renderWatchDock();
   return `<aside class="chart-dock" id="chart-dock">
     <div class="dock-tabs">
       <button class="dock-tab ${active === "watch" ? "active" : ""}" data-dock-tab="watch"><span>自选</span><b>${watchCount}</b></button>
       <button class="dock-tab ${active === "insight" ? "active" : ""}" data-dock-tab="insight"><span>档案</span></button>
+      <button class="dock-tab ${active === "iwc" ? "active" : ""}" data-dock-tab="iwc" title="同花顺 / 问财自选板块（只读同步）"><span>同花顺</span><b>${iwcCount}</b></button>
     </div>
-    <div class="dock-content" id="dock-content">${active === "insight" ? renderChartInsight() : renderWatchDock()}</div>
+    <div class="dock-content" id="dock-content">${content}</div>
   </aside>`;
 }
 

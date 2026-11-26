@@ -1,5 +1,7 @@
 import { state } from "../lib/state";
 import type {
+  IwcPlate,
+  IwcStock,
   LhbAgency,
   LhbDetail,
   LhbHotMoneyTag,
@@ -7,6 +9,7 @@ import type {
   LhbSeat,
   LhbSeatTrade,
   LhbStock,
+  OtherModule,
   OtherTab,
 } from "../lib/types";
 import {
@@ -14,11 +17,13 @@ import {
   fmtDotDate,
   fmtPct,
   icon,
+  marketLabel,
   pctToneClass,
   relTime,
   weekdayFromYmd,
 } from "../lib/ui";
 import { renderViewHead } from "./common";
+import { iwcPctClass, iwcPctText, iwcSortedStocks, iwcSortLabel } from "../lib/iwc";
 
 /* 其他 · 游资动态：龙虎榜上榜个股、游资名号聚合、机构净买入、营业部席位。
    只做渲染与 data-* 标记，数据加载与动作分发给 main.ts。 */
@@ -40,6 +45,10 @@ const BOARD_SORT: Array<{ key: "net" | "pct" | "seats"; label: string }> = [
 
 const FOOT =
   "数据来源：公开龙虎榜接口，连板与板块由东财涨停池补充；盘后陆续更新，未发布时自动回退到最近交易日。同一席位命中多个游资名号会分别计入游资榜。仅作复盘用途，不构成投资建议。";
+
+/** 同花顺自选模块的只读语义：登录态与数据都只在本机，绝不回写问财。 */
+const IWC_FOOT =
+  "数据来源：登录同花顺 / 问财后只读拉取你自己账号下的自选板块与自选股。登录态只保存在本机，不保存账号密码；同步只读，不回写问财、不修改网站上的自选。导入仅把成分股 / 自选股复制到本地自选分组，可随时删除。仅作复盘用途，不构成投资建议。";
 
 /** 游资等级由接口 YouZiIcon 单独渲染，名号库里同名的标签不再重复展示。 */
 const LEVEL_TAGS = new Set(["一线游资", "顶级游资", "知名游资"]);
@@ -140,6 +149,26 @@ function selectedAgency(): LhbAgency | undefined {
   return state.lhbAgencies?.rows.find((item) => item.id === state.lhbAgencyId);
 }
 
+/* ————————————————— module switch ————————————————— */
+
+const MODULES: Array<{ key: OtherModule; label: string; hint: string }> = [
+  { key: "lhb", label: "游资动态", hint: "龙虎榜上榜个股 · 游资席位 · 机构动向" },
+  { key: "iwc", label: "同花顺自选", hint: "登录同花顺 / 问财后只读同步自己的自选板块与自选股" },
+];
+
+function renderModuleSwitch(): string {
+  const active = MODULES.find((item) => item.key === state.otherModule) ?? MODULES[0];
+  return `<div class="oh-module-switch">
+    <div class="seg oh-modules" role="tablist" aria-label="其他页模块">
+      ${MODULES.map(
+        (item) => `<button role="tab" aria-selected="${item.key === state.otherModule}" class="${item.key === state.otherModule ? "active" : ""}" data-other-module="${item.key}" title="${item.hint}">${item.label}</button>`,
+      ).join("")}
+    </div>
+    <span class="oh-module-hint">${active.hint}</span>
+    ${state.otherModule === "iwc" ? `<span class="oh-module-badge">${icon("eye", 11)}<span>只读同步</span></span>` : ""}
+  </div>`;
+}
+
 /* ————————————————— shell ————————————————— */
 
 export function renderOther(): string {
@@ -150,24 +179,34 @@ export function renderOther(): string {
 }
 
 export function renderOtherStage(): string {
-  return `<div class="oh-scroll">
-    ${renderBar()}
-    ${renderTabsRow()}
-    <div class="oh-workbench">${renderListColumn()}${renderPanelColumn()}</div>
+  const isIwc = state.otherModule === "iwc";
+  return `<div class="oh-scroll" data-stage-module="${state.otherModule}">
+    ${renderModuleSwitch()}
+    ${isIwc ? renderIwcStage() : renderLhbStage()}
   </div>
-  <div class="oh-foot"><span>${icon("info", 12)}</span><span>${FOOT}</span></div>`;
+  <div class="oh-foot"><span>${icon("info", 12)}</span><span>${isIwc ? IWC_FOOT : FOOT}</span></div>`;
 }
 
-/** 供 main.ts 局部刷新：保留三处滚动位置（整页 / 左列 / 右面板）。 */
+/** 游资动态模块：保持原有三块骨架不加改动。 */
+function renderLhbStage(): string {
+  return `${renderBar()}
+  ${renderTabsRow()}
+  <div class="oh-workbench">${renderListColumn()}${renderPanelColumn()}</div>`;
+}
+
+/** 供 main.ts 局部刷新：保留滚动位置（整页 / 左列 / 右面板），并兼容两个模块。 */
 export function updateOtherStage(): void {
   const old = document.getElementById("other-stage");
   if (!old) return;
-  const listTop = old.querySelector<HTMLElement>(".oh-list-body")?.scrollTop ?? 0;
-  const panelTop = old.querySelector<HTMLElement>(".oh-panel-body")?.scrollTop ?? 0;
+  const oldModule = old.querySelector<HTMLElement>(".oh-scroll")?.dataset.stageModule ?? "";
+  const sameModule = oldModule === state.otherModule;
+  const listTop = sameModule ? old.querySelector<HTMLElement>(".oh-list-body")?.scrollTop ?? 0 : 0;
+  const panelTop = sameModule ? old.querySelector<HTMLElement>(".oh-panel-body")?.scrollTop ?? 0 : 0;
   const next = document.createElement("div");
   next.id = "other-stage";
   next.innerHTML = renderOtherStage();
   old.replaceWith(next);
+  if (!sameModule) return;
   const list = next.querySelector<HTMLElement>(".oh-list-body");
   if (list) list.scrollTop = listTop;
   const panel = next.querySelector<HTMLElement>(".oh-panel-body");
@@ -665,5 +704,295 @@ function renderSeatLogRow(row: LhbSeatTrade): string {
     <td class="oh-c-money">${amount(row.buy)}</td>
     <td class="oh-c-money">${amount(row.sell)}</td>
     <td class="oh-c-money">${moneyCell(row.net)}</td>
+  </tr>`;
+}
+
+/* ————————————————— 同花顺自选 · helpers ————————————————— */
+
+function maskIwcUserId(raw: string | null | undefined): string {
+  const id = String(raw ?? "").trim();
+  if (!id) return "";
+  if (id.includes("*")) return id;
+  if (id.length <= 2) return `${id.slice(0, 1)}***`;
+  if (id.length <= 6) return `${id.slice(0, 1)}***${id.slice(-1)}`;
+  return `${id.slice(0, 3)}****${id.slice(-2)}`;
+}
+
+function iwcLoggedIn(): boolean {
+  return state.iwcAuth?.iwcLoggedIn === true;
+}
+
+/** 板块按 sort 升序（同 sort 用 sn 兜底），与面板里展示的「排序」一致。 */
+function iwcPlateRows(): IwcPlate[] {
+  return [...(state.iwcSnapshot?.plates ?? [])].sort((a, b) =>
+    a.sort === b.sort ? a.sn.localeCompare(b.sn) : a.sort - b.sort,
+  );
+}
+
+function iwcSelfStockRows(): IwcStock[] {
+  return state.iwcSnapshot?.selfStocks ?? [];
+}
+
+function selectedIwcPlate(): IwcPlate | undefined {
+  const plates = iwcPlateRows();
+  return plates.find((plate) => plate.sn === state.iwcPlateSn) ?? plates[0];
+}
+
+function iwcSyncSummary(): string {
+  if (state.iwcSyncing) return "正在同步问财自选…";
+  if (state.iwcSnapshot?.syncedAt) return `最后同步 ${relTime(state.iwcSnapshot.syncedAt)}`;
+  return iwcLoggedIn() ? "尚未同步" : "登录后可同步";
+}
+
+/* ————————————————— 同花顺自选 · shell ————————————————— */
+
+function renderIwcStage(): string {
+  return `${renderIwcBar()}
+  ${renderIwcTabs()}
+  ${renderIwcNotices()}
+  ${renderIwcBody()}`;
+}
+
+function renderIwcBar(): string {
+  const auth = state.iwcAuth;
+  const logged = iwcLoggedIn();
+  const pending = state.iwcLoginPending;
+  const syncing = state.iwcSyncing;
+  const userId = maskIwcUserId(auth?.userId ?? state.iwcSnapshot?.userId);
+  const authText = !auth && state.iwcLoading ? "读取登录态…" : logged ? "问财已登录" : "问财未登录";
+
+  return `<div class="oh-bar iwc-bar">
+    <div class="oh-bar-copy">
+      <h2>同花顺自选</h2>
+      <p><span class="oh-kicker">其他</span>只读同步问财自选板块与自选股 · 不保存账号密码</p>
+    </div>
+    <div class="iwc-status">
+      <span class="iwc-state ${logged ? "is-on" : ""}"><i class="iwc-dot"></i>${authText}</span>
+      ${auth ? `<span class="iwc-state is-ghost ${auth.thsLoggedIn ? "is-on" : ""}">同花顺${auth.thsLoggedIn ? "已登录" : "未登录"}</span>` : ""}
+      ${userId ? `<span class="iwc-user" title="问财账号（脱敏）">${esc(userId)}</span>` : ""}
+      <span class="oh-sync">${esc(iwcSyncSummary())}</span>
+    </div>
+    <div class="oh-bar-actions iwc-actions">
+      <button class="chip iwc-login" data-iwc-login ${pending ? "disabled" : ""} title="${logged ? "重新打开同花顺登录窗口" : "打开同花顺 / 问财登录窗口"}">
+        ${icon("eye", 12)}<span>${pending ? "等待登录…" : logged ? "重新登录" : "登录同花顺"}</span>
+      </button>
+      <button class="chip iwc-sync ${syncing ? "is-busy" : ""}" data-iwc-sync ${!logged || syncing ? "disabled" : ""} title="${logged ? "从问财只读拉取自选板块与自选股" : "登录后才能同步"}">
+        ${icon("refresh", 12)}<span>${syncing ? "同步中" : "同步"}</span>
+      </button>
+      <button class="chip iwc-logout" data-iwc-logout ${!logged ? "disabled" : ""} title="退出登录并清除本机登录态">
+        ${icon("close", 12)}<span>退出</span>
+      </button>
+    </div>
+  </div>`;
+}
+
+function renderIwcTabs(): string {
+  const plates = iwcPlateRows();
+  const selfStocks = iwcSelfStockRows();
+  const memberCount = plates.reduce((sum, plate) => sum + plate.members.length, 0);
+  const tab = state.iwcTab;
+  const hint =
+    tab === "self"
+      ? `${selfStocks.length} 只自选股 · 扁平列表，点行打开 K 线`
+      : `${plates.length} 个自选板块 · ${memberCount} 只成分股`;
+  const snapshot = state.iwcSnapshot;
+  return `<div class="oh-tabs-row">
+    <div class="seg oh-tabs iwc-tabs" role="tablist" aria-label="同花顺自选分组">
+      <button role="tab" aria-selected="${tab === "plates"}" class="${tab === "plates" ? "active" : ""}" data-iwc-tab="plates" title="按板块分组查看问财自选">自选板块<em class="iwc-tab-count">${plates.length}</em></button>
+      <button role="tab" aria-selected="${tab === "self"}" class="${tab === "self" ? "active" : ""}" data-iwc-tab="self" title="问财自选股的扁平列表">自选股<em class="iwc-tab-count">${selfStocks.length}</em></button>
+    </div>
+    <span class="oh-tab-hint">${hint}</span>
+    <div class="oh-tabs-meta">
+      ${snapshot && snapshot.syncedAt ? `<span class="oh-date-chip" title="最近一次同步时间">${relTime(snapshot.syncedAt)}</span>` : ""}
+    </div>
+  </div>`;
+}
+
+/** 错误条 + 同步提示（warnings 逐条列出，可折叠）。 */
+function renderIwcNotices(): string {
+  const parts: string[] = [];
+  if (state.iwcError) {
+    parts.push(`<div class="banner error iwc-banner">${icon("activity", 13)}<span>${esc(state.iwcError)}</span>${
+      iwcLoggedIn()
+        ? `<button class="banner-action" data-iwc-sync title="重新同步自选">重试同步</button>`
+        : `<button class="banner-action" data-iwc-login title="重新打开登录窗口">登录重试</button>`
+    }</div>`);
+  }
+  const warnings = state.iwcSnapshot?.warnings ?? [];
+  if (warnings.length) {
+    parts.push(`<details class="iwc-warnings" open>
+      <summary>${icon("info", 12)}<span>同步提示 ${warnings.length} 条</span>${icon("chevronDown", 12, "iwc-warnings-caret")}</summary>
+      <ul class="iwc-warnings-list">${warnings.map((warning) => `<li>${esc(warning)}</li>`).join("")}</ul>
+    </details>`);
+  }
+  return parts.length ? `<div class="iwc-notices">${parts.join("")}</div>` : "";
+}
+
+/* ————————————————— 同花顺自选 · body ————————————————— */
+
+function renderIwcBody(): string {
+  if (!iwcLoggedIn()) return renderIwcLoginGate();
+  if (state.iwcLoading && !state.iwcSnapshot) {
+    return renderIwcSingle(`<div class="oh-loading">${icon("activity", 13)}<span>正在读取同花顺自选…</span></div>`);
+  }
+  if (!state.iwcSnapshot) return renderIwcIdle();
+  return state.iwcTab === "self" ? renderIwcSelfPanel() : renderIwcPlatesWorkbench();
+}
+
+/** 单栏骨架：登录引导 / 加载 / 空态共用。 */
+function renderIwcSingle(inner: string): string {
+  return `<div class="oh-workbench is-single"><div class="oh-col">${inner}</div></div>`;
+}
+
+function renderIwcLoginGate(): string {
+  const pending = state.iwcLoginPending;
+  if (state.iwcLoading && !state.iwcAuth) {
+    return renderIwcSingle(`<div class="oh-loading">${icon("activity", 13)}<span>正在读取同花顺登录状态…</span></div>`);
+  }
+  return renderIwcSingle(`<div class="oh-empty iwc-gate">
+    <b>登录同花顺 / 问财后同步自选</b>
+    <span>登录后可以只读同步你自己账号下的自选板块（板块名 + 成分股）和自选股列表。天梯不保存问财账号密码，同步不会回写问财，也不会修改你网站上的自选。</span>
+    <span>登录在同花顺官方页面完成，登录态只留在本机；随时可以点「退出」清除。</span>
+    <button class="chip" data-iwc-login ${pending ? "disabled" : ""}>${icon("eye", 12)}<span>${pending ? "等待登录…" : "登录同花顺"}</span></button>
+    ${pending ? `<span class="iwc-gate-note">已打开登录窗口，登录成功后会自动读取自选…</span>` : ""}
+  </div>`);
+}
+
+function renderIwcIdle(): string {
+  return renderIwcSingle(`<div class="oh-empty">
+    <b>还没有同步过自选</b>
+    <span>点右上角「同步」从问财拉取当前的自选板块与自选股。同步是只读的：只拉取你自己账号的内容，不保存密码、不回写问财。</span>
+    <button class="chip" data-iwc-sync ${state.iwcSyncing ? "disabled" : ""}>${icon("refresh", 12)}<span>${state.iwcSyncing ? "同步中" : "立即同步"}</span></button>
+  </div>`);
+}
+
+function renderIwcPlatesWorkbench(): string {
+  const plates = iwcPlateRows();
+  if (!plates.length) {
+    return renderIwcSingle(`<div class="oh-empty">
+      <b>暂无自选板块</b>
+      <span>你问财账号下的自选板块为空。去问财网站创建板块后再点「同步」，板块与成分股就会出现在这里。</span>
+      <button class="chip" data-iwc-sync ${state.iwcSyncing ? "disabled" : ""}>${icon("refresh", 12)}<span>${state.iwcSyncing ? "同步中" : "重新同步"}</span></button>
+    </div>`);
+  }
+  const selected = selectedIwcPlate() ?? plates[0];
+  return `<div class="oh-workbench">
+    <div class="oh-col oh-list-col">
+      <div class="oh-col-head">
+        <span class="oh-col-title">自选板块<em>${plates.length}</em></span>
+        <span class="oh-col-note">按问财排序</span>
+      </div>
+      <div class="oh-list-body">${plates.map((plate) => renderIwcPlateRow(plate, selected.sn)).join("")}</div>
+    </div>
+    <div class="oh-col oh-panel-col">${renderIwcPlatePanel(selected)}</div>
+  </div>`;
+}
+
+function renderIwcPlateRow(plate: IwcPlate, selectedSn: string): string {
+  const active = plate.sn === selectedSn ? " is-active" : "";
+  const condition = plate.condition.trim();
+  const dynamic = condition
+    ? `<i class="oh-tag is-board" title="动态条件：${esc(condition)}">动态</i>`
+    : "";
+  return `<button class="oh-row${active}" data-iwc-plate="${esc(plate.sn)}" title="查看「${esc(plate.name)}」的成分股">
+    <span class="oh-row-main">
+      <span class="oh-row-name">${esc(plate.name)}${dynamic}</span>
+      <span class="oh-row-sub">${plate.members.length} 只成分股${plate.sort ? ` · 排序 ${plate.sort}` : ""}${condition ? ` · ${esc(condition)}` : ""}</span>
+    </span>
+    <span class="oh-row-num">${icon("chevronRight", 13)}</span>
+  </button>`;
+}
+
+function renderIwcPlatePanel(plate: IwcPlate | undefined): string {
+  if (!plate) {
+    return `<div class="oh-empty"><b>选择左侧板块</b><span>点一个自选板块查看它的成分股。</span></div>`;
+  }
+  const condition = plate.condition.trim();
+  const members = iwcSortedStocks(plate.members);
+  const syncedAt = state.iwcSnapshot?.syncedAt ?? 0;
+  const meta = [
+    condition ? `动态条件：${esc(condition)}` : "静态板块",
+    `成分股 ${members.length} 只`,
+    plate.sort ? `排序 ${plate.sort}` : "",
+    syncedAt ? `同步于 ${relTime(syncedAt)}` : "",
+  ].filter(Boolean);
+
+  return `<div class="oh-panel-head">
+      <div class="oh-panel-title">
+        <h3>${esc(plate.name)}</h3>
+        ${condition ? `<i class="oh-tag is-board" title="${esc(condition)}">动态</i>` : ""}
+        <span class="oh-panel-code">SN ${esc(plate.sn)}</span>
+      </div>
+      <div class="oh-panel-actions">
+        <button class="chip" data-iwc-sort title="切换成分股排序：默认 / 涨幅高→低 / 低→高">${icon("activity", 12)}<span>${iwcSortLabel()}</span></button>
+        <button class="chip" data-iwc-import="plate:${esc(plate.sn)}" ${members.length ? "" : "disabled"} title="把「${esc(plate.name)}」的 ${members.length} 只成分股加入本地自选">
+          ${icon("download", 12)}<span>导入自选</span>
+        </button>
+      </div>
+    </div>
+    <div class="oh-panel-meta">${meta.map((item) => `<span>${item}</span>`).join("")}</div>
+    <div class="oh-panel-body">${
+      members.length
+        ? renderIwcStockTable(members)
+        : `<div class="oh-empty is-panel"><b>该板块暂无成分股</b><span>问财上的动态板块可能暂时没有命中的股票，稍后再同步试试。</span></div>`
+    }</div>`;
+}
+
+function renderIwcSelfPanel(): string {
+  const stocks = iwcSelfStockRows();
+  if (!stocks.length) {
+    return renderIwcSingle(`<div class="oh-empty">
+      <b>暂无自选股</b>
+      <span>你问财账号下的自选股列表为空。在问财网站上添加股票后再点「同步」，就会出现在这里。</span>
+      <button class="chip" data-iwc-sync ${state.iwcSyncing ? "disabled" : ""}>${icon("refresh", 12)}<span>${state.iwcSyncing ? "同步中" : "重新同步"}</span></button>
+    </div>`);
+  }
+  const syncedAt = state.iwcSnapshot?.syncedAt ?? 0;
+  return `<div class="oh-workbench is-single">
+    <div class="oh-col iwc-self-col">
+      <div class="oh-panel-head">
+        <div class="oh-panel-title">
+          <h3>自选股</h3>
+          <span class="oh-panel-code">${stocks.length} 只</span>
+        </div>
+        <div class="oh-panel-actions">
+          ${syncedAt ? `<span class="oh-sync">同步于 ${relTime(syncedAt)}</span>` : ""}
+          <button class="chip" data-iwc-sort title="切换自选股排序：默认 / 涨幅高→低 / 低→高">${icon("activity", 12)}<span>${iwcSortLabel()}</span></button>
+          <button class="chip" data-iwc-import="self" title="把这 ${stocks.length} 只自选股加入本地自选分组">
+            ${icon("download", 12)}<span>导入自选</span>
+          </button>
+        </div>
+      </div>
+      <div class="oh-panel-body">${renderIwcStockTable(iwcSortedStocks(stocks))}</div>
+    </div>
+  </div>`;
+}
+
+/* ————————————————— 同花顺自选 · 股票表 ————————————————— */
+
+function renderIwcStockTable(stocks: IwcStock[]): string {
+  return `<table class="oh-table iwc-stock-table">
+    <thead><tr>
+      <th class="oh-c-rank">#</th>
+      <th class="iwc-c-code">代码</th>
+      <th class="oh-c-stock">名称</th>
+      <th class="iwc-c-market">市场</th>
+      <th class="iwc-c-pct">涨幅</th>
+      <th class="iwc-c-act">操作</th>
+    </tr></thead>
+    <tbody>${stocks.map((stock, index) => renderIwcStockRow(stock, index)).join("")}</tbody>
+  </table>`;
+}
+
+function renderIwcStockRow(stock: IwcStock, index: number): string {
+  const attrs = `data-stock-code="${esc(stock.code)}" data-stock-name="${esc(stock.name || stock.code)}" data-iwc-stock="${esc(stock.code)}" data-iwc-name="${esc(stock.name)}" data-iwc-market="${esc(stock.market)}"`;
+  const active = state.chartStock?.code === stock.code ? " is-active" : "";
+  return `<tr class="iwc-stock-row${active}" ${attrs} title="查看 ${esc(stock.name)} 的 K 线">
+    <td class="oh-c-rank">${index + 1}</td>
+    <td class="iwc-c-code">${esc(stock.code)}</td>
+    <td class="oh-c-stock"><span class="oh-stock-name">${esc(stock.name)}</span></td>
+    <td class="iwc-c-market">${marketLabel(stock.market, stock.code)}</td>
+    <td class="iwc-c-pct ${iwcPctClass(stock.code)}">${iwcPctText(stock.code)}</td>
+    <td class="iwc-c-act"><button class="chip iwc-chart" ${attrs} title="打开 ${esc(stock.name)} 的 K 线">${icon("chart", 11)}<span>K线</span></button></td>
   </tr>`;
 }

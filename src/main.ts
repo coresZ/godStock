@@ -434,6 +434,7 @@ function navigate(view: ViewName): void {
     syncHash();
     renderMain();
     updateChrome();
+    if (state.chartDock === "iwc") void ensureIwcData();
     if (!state.chartData && !state.chartLoading) void loadChart();
     return;
   }
@@ -573,6 +574,10 @@ function syncLhbSelection(): void {
 /** 进入「其他」页 / 换日后拉取龙虎榜；force 时清空并重新请求。 */
 async function ensureOther(force = false): Promise<void> {
   if (!onOtherView() || !state.date) return;
+  if (state.otherModule === "iwc") {
+    await ensureIwc();
+    return;
+  }
   if (lhbEnsuring) {
     // 已有一轮在跑：记下来，等它结束后按最新日期补一次。
     lhbPending = true;
@@ -718,6 +723,250 @@ function selectLhbStock(code: string): void {
   void loadLhbDetail(code);
 }
 
+/* ————————————————— other · 同花顺自选 ————————————————— */
+
+let iwcEnsurePromise: Promise<void> | null = null;
+let iwcLoginTimer: number | null = null;
+let iwcLoginTickBusy = false;
+
+function iwcStale(): boolean {
+  const snapshot = state.iwcSnapshot;
+  if (!snapshot || !snapshot.syncedAt) return true;
+  return Date.now() / 1000 - snapshot.syncedAt > 10 * 60;
+}
+
+/** 同花顺自选数据在「其他」模块和 K 线右侧栏都可能显示，刷新时两处一起更新。 */
+function refreshIwcSurfaces(): void {
+  if (onOtherView() && state.otherModule === "iwc") updateOtherStage();
+  if (state.view === "chart" && state.chartDock === "iwc") updateChartDock();
+}
+
+function iwcSelectedPlate() {
+  const snapshot = state.iwcSnapshot;
+  if (!snapshot) return undefined;
+  return snapshot.plates.find((plate) => plate.sn === state.iwcPlateSn) ?? snapshot.plates[0];
+}
+
+/** 当前需要行情的代码：选中板块的成分股；「其他」页自选股页签再加自选股。 */
+function iwcQuoteCodes(): string[] {
+  const snapshot = state.iwcSnapshot;
+  if (!snapshot) return [];
+  const codes = new Set<string>();
+  const plate = iwcSelectedPlate();
+  plate?.members.forEach((stock) => codes.add(stock.code));
+  if (onOtherView() && state.otherModule === "iwc" && state.iwcTab === "self") {
+    snapshot.selfStocks.forEach((stock) => codes.add(stock.code));
+  }
+  return [...codes];
+}
+
+const iwcQuotePending = new Set<string>();
+
+/** 批量拉取成分股行情（腾讯/新浪/东财批量接口，80 只/批），供涨幅显示与排序。 */
+async function ensureIwcQuotes(force = false): Promise<void> {
+  const codes = iwcQuoteCodes();
+  if (!codes.length) return;
+  const now = Date.now() / 1000;
+  const stale = force || !state.iwcQuoteAt || now - state.iwcQuoteAt > 60;
+  const need = codes.filter((code) => (stale || !state.iwcQuotes[code]) && !iwcQuotePending.has(code));
+  if (!need.length) return;
+  let fetched = false;
+  for (let index = 0; index < need.length; index += 80) {
+    const chunk = need.slice(index, index + 80);
+    chunk.forEach((code) => iwcQuotePending.add(code));
+    try {
+      const quotes = await api.getStockQuotes(chunk);
+      const next = { ...state.iwcQuotes };
+      for (const quote of quotes) next[quote.code] = { price: quote.price, pct: quote.pct };
+      state.iwcQuotes = next;
+      fetched = true;
+    } catch {
+      /* 行情失败只影响涨幅列，保留已有缓存 / 显示 — */
+    } finally {
+      chunk.forEach((code) => iwcQuotePending.delete(code));
+    }
+  }
+  if (fetched) state.iwcQuoteAt = Date.now() / 1000;
+  refreshIwcSurfaces();
+}
+
+/** 读取登录态与本地镜像；已登录且镜像为空/过期时静默同步一次。 */
+async function ensureIwcData(): Promise<void> {
+  if (iwcEnsurePromise) return iwcEnsurePromise;
+  state.iwcLoading = true;
+  state.iwcError = null;
+  refreshIwcSurfaces();
+  iwcEnsurePromise = (async () => {
+    try {
+      state.iwcAuth = await api.iwcAuthStatus();
+      const snapshot = await api.iwcGetSnapshot();
+      if (snapshot?.syncedAt) state.iwcSnapshot = snapshot;
+      if (state.iwcSnapshot && !state.iwcSnapshot.plates.some((plate) => plate.sn === state.iwcPlateSn)) {
+        state.iwcPlateSn = state.iwcSnapshot.plates[0]?.sn ?? "";
+      }
+      if (state.iwcAuth?.iwcLoggedIn && iwcStale()) await syncIwc(false);
+    } catch (e) {
+      state.iwcError = messageFrom(e, "同花顺自选读取失败");
+    } finally {
+      state.iwcLoading = false;
+      iwcEnsurePromise = null;
+      refreshIwcSurfaces();
+      void ensureIwcQuotes();
+    }
+  })();
+  return iwcEnsurePromise;
+}
+
+/** 「其他」页模块入口：数据加载与视图解耦，K 线侧栏也复用 ensureIwcData。 */
+async function ensureIwc(): Promise<void> {
+  if (!onOtherView() || state.otherModule !== "iwc") return;
+  await ensureIwcData();
+}
+
+async function syncIwc(manual = true): Promise<void> {
+  if (state.iwcSyncing) return;
+  state.iwcSyncing = true;
+  state.iwcError = null;
+  refreshIwcSurfaces();
+  try {
+    const snapshot = await api.iwcSync();
+    state.iwcSnapshot = snapshot;
+    state.iwcAuth = {
+      iwcLoggedIn: true,
+      thsLoggedIn: state.iwcAuth?.thsLoggedIn ?? true,
+      userId: snapshot.userId || state.iwcAuth?.userId || "",
+    };
+    if (!snapshot.plates.some((plate) => plate.sn === state.iwcPlateSn)) state.iwcPlateSn = snapshot.plates[0]?.sn ?? "";
+    // 成分股会变：旧行情缓存作废，同步完成后重新批量拉一次。
+    state.iwcQuotes = {};
+    state.iwcQuoteAt = 0;
+    if (manual) toast(`已同步 ${snapshot.plates.length} 个自选板块 · ${snapshot.selfStocks.length} 只自选股`);
+  } catch (e) {
+    // 退出登录瞬间仍在飞的同步：不要把它渲染成错误条。
+    if (state.iwcAuth?.iwcLoggedIn !== false) {
+      state.iwcError = messageFrom(e, "同花顺/问财同步失败");
+      if (manual) toast(state.iwcError, "error");
+    }
+  } finally {
+    state.iwcSyncing = false;
+    refreshIwcSurfaces();
+    void ensureIwcQuotes();
+  }
+}
+
+/** 打开应用内登录窗口，轮询登录态；登录成功后关窗并同步。 */
+async function openIwcLogin(): Promise<void> {
+  if (state.iwcLoginPending) return;
+  state.iwcLoginPending = true;
+  state.iwcError = null;
+  refreshIwcSurfaces();
+  try {
+    await api.iwcOpenLogin();
+    startIwcLoginPoll();
+  } catch (e) {
+    state.iwcLoginPending = false;
+    state.iwcError = messageFrom(e, "登录窗口打开失败");
+    refreshIwcSurfaces();
+  }
+}
+
+function startIwcLoginPoll(): void {
+  stopIwcLoginPoll();
+  const started = Date.now();
+  iwcLoginTimer = window.setInterval(async () => {
+    // 慢响应时避免两个 tick 同时判定登录、双 toast。
+    if (iwcLoginTickBusy) return;
+    iwcLoginTickBusy = true;
+    try {
+      if (Date.now() - started > 5 * 60 * 1000) {
+        stopIwcLoginPoll();
+        state.iwcLoginPending = false;
+        state.iwcError = "等待登录超时，请重新点击「登录同花顺」";
+        void api.iwcCloseLogin().catch(() => {});
+        refreshIwcSurfaces();
+        return;
+      }
+      const auth = await api.iwcAuthStatus();
+      state.iwcAuth = auth;
+      if (!auth.iwcLoggedIn) {
+        // 用户可能直接关掉登录窗口：窗口没了又没登录，就不要继续空等。
+        const windowOpen = await api.iwcLoginWindowOpen().catch(() => true);
+        if (!windowOpen) {
+          stopIwcLoginPoll();
+          state.iwcLoginPending = false;
+          state.iwcError = "登录窗口已关闭，可重新点击「登录同花顺」";
+          refreshIwcSurfaces();
+        }
+        return;
+      }
+      stopIwcLoginPoll();
+      state.iwcLoginPending = false;
+      await api.iwcCloseLogin().catch(() => {});
+      toast("已登录同花顺/问财，开始同步自选");
+      await syncIwc(false);
+    } catch {
+      /* 登录窗口打开期间接口短暂失败：继续轮询 */
+    } finally {
+      iwcLoginTickBusy = false;
+    }
+  }, 2000);
+}
+
+function stopIwcLoginPoll(): void {
+  if (iwcLoginTimer !== null) {
+    window.clearInterval(iwcLoginTimer);
+    iwcLoginTimer = null;
+  }
+  iwcLoginTickBusy = false;
+}
+
+async function logoutIwc(): Promise<void> {
+  stopIwcLoginPoll();
+  state.iwcLoginPending = false;
+  let warning: string | null = null;
+  try {
+    // 先关登录窗口，避免退出后远端登录页继续回写 Cookie。
+    await api.iwcCloseLogin().catch(() => {});
+    await api.iwcLogout();
+  } catch (e) {
+    // 后端即使有 Cookie 没删干净也会清空本地镜像；这里仍然重置界面。
+    warning = messageFrom(e, "退出登录未完全成功");
+  } finally {
+    state.iwcSnapshot = null;
+    state.iwcAuth = { iwcLoggedIn: false, thsLoggedIn: false, userId: "" };
+    state.iwcError = warning;
+    state.iwcPlateSn = "";
+    refreshIwcSurfaces();
+  }
+  if (warning) toast(warning, "error");
+  else toast("已退出同花顺/问财登录");
+}
+
+/** 把当前板块 / 自选股整批交给统一的自选分组弹层（只读同步 → 本地写入）。 */
+function importIwc(target: string): void {
+  const snapshot = state.iwcSnapshot;
+  if (!snapshot) {
+    toast("还没有同步到同花顺自选数据");
+    return;
+  }
+  let stocks: WatchStock[] = [];
+  let label = "";
+  if (target === "self") {
+    stocks = snapshot.selfStocks.map((item) => ({ code: item.code, name: item.name || item.code, market: item.market }));
+    label = "同花顺自选股";
+  } else if (target.startsWith("plate:")) {
+    const plate = snapshot.plates.find((item) => item.sn === target.slice("plate:".length));
+    if (!plate) return;
+    stocks = plate.members.map((item) => ({ code: item.code, name: item.name || item.code, market: item.market }));
+    label = `自选板块「${plate.name}」`;
+  }
+  if (!stocks.length) {
+    toast("当前列表没有可以加入的股票");
+    return;
+  }
+  void openWatchAddDialog(stocks, `把${label}加入自选`);
+}
+
 /** 策略面板：把当前阶段的股票一次性加入自选（复用池子的分组选择弹层）。 */
 function addScreenStocksToWatch(stage: StrategyStage): void {
   const screen = state.screen;
@@ -726,7 +975,7 @@ function addScreenStocksToWatch(stage: StrategyStage): void {
     return;
   }
   const marketOf = (code: string): string =>
-    state.day?.stocks.find((item) => item.code === code)?.market ?? (code.startsWith("6") ? "1" : "0");
+    state.day?.stocks.find((item) => item.code === code)?.market ?? (code.startsWith("6") || code.startsWith("5") || code.startsWith("9") ? "1" : "0");
   let picks: Array<{ code: string; name: string }> = [];
   let label = "当前列表";
   if (stage === "watch" || stage === "candidates") {
@@ -898,6 +1147,7 @@ function openChart(code: string, name: string, market = "", animate = true): voi
   state.chartLoading = true;
   syncHash();
   renderMain({ animate });
+  if (state.chartDock === "iwc") void ensureIwcData();
   void loadChart();
 }
 
@@ -912,6 +1162,7 @@ function openIndexChart(secid: string, name: string): void {
   state.chartLoading = true;
   syncHash();
   renderMain();
+  if (state.chartDock === "iwc") void ensureIwcData();
   void loadChart();
 }
 
@@ -1201,6 +1452,7 @@ function renderMain(opts: { animate?: boolean } = {}): void {
     ladder: document.querySelector<HTMLElement>(".ladder-main")?.scrollTop ?? 0,
     pool: document.querySelector<HTMLElement>(".pool-body")?.scrollTop ?? 0,
     side: document.querySelector<HTMLElement>(".chart-side")?.scrollTop ?? 0,
+    dock: document.querySelector<HTMLElement>("#chart-dock .watch-list")?.scrollTop ?? 0,
     otherList: document.querySelector<HTMLElement>(".oh-list-body")?.scrollTop ?? 0,
     otherPanel: document.querySelector<HTMLElement>(".oh-panel-body")?.scrollTop ?? 0,
   };
@@ -1225,6 +1477,8 @@ function renderMain(opts: { animate?: boolean } = {}): void {
   if (poolScroller) poolScroller.scrollTop = scrolls.pool;
   const chartSide = main.querySelector<HTMLElement>(".chart-side");
   if (chartSide) chartSide.scrollTop = scrolls.side;
+  const dockList = main.querySelector<HTMLElement>("#chart-dock .watch-list");
+  if (dockList) dockList.scrollTop = scrolls.dock;
   const otherList = main.querySelector<HTMLElement>(".oh-list-body");
   if (otherList) otherList.scrollTop = scrolls.otherList;
   const otherPanel = main.querySelector<HTMLElement>(".oh-panel-body");
@@ -1524,6 +1778,69 @@ function handleClick(e: MouseEvent): void {
     void exportStrategy();
     return;
   }
+  const otherModule = target.closest<HTMLElement>("[data-other-module]");
+  if (otherModule) {
+    const module = otherModule.dataset.otherModule as "lhb" | "iwc" | undefined;
+    if (module && module !== state.otherModule) {
+      state.otherModule = module;
+      updateOtherStage();
+      if (module === "iwc") void ensureIwc();
+      else void ensureOther();
+    }
+    return;
+  }
+  if (target.closest("[data-iwc-login]")) {
+    void openIwcLogin();
+    return;
+  }
+  if (target.closest("[data-iwc-sync]")) {
+    void syncIwc(true);
+    return;
+  }
+  if (target.closest("[data-iwc-logout]")) {
+    void logoutIwc();
+    return;
+  }
+  const iwcSortBtn = target.closest<HTMLElement>("[data-iwc-sort]");
+  if (iwcSortBtn) {
+    state.iwcSort = state.iwcSort === "default" ? "pctDesc" : state.iwcSort === "pctDesc" ? "pctAsc" : "default";
+    refreshIwcSurfaces();
+    return;
+  }
+  const iwcTab = target.closest<HTMLElement>("[data-iwc-tab]");
+  if (iwcTab) {
+    const tab = iwcTab.dataset.iwcTab as "plates" | "self" | undefined;
+    if (tab && tab !== state.iwcTab) {
+      state.iwcTab = tab;
+      updateOtherStage();
+      void ensureIwcQuotes();
+    }
+    return;
+  }
+  const iwcImport = target.closest<HTMLElement>("[data-iwc-import]");
+  if (iwcImport) {
+    importIwc(iwcImport.dataset.iwcImport || "");
+    return;
+  }
+  const iwcPlate = target.closest<HTMLElement>("[data-iwc-plate]");
+  if (iwcPlate) {
+    const sn = iwcPlate.dataset.iwcPlate || "";
+    if (state.view === "chart" && state.chartDock === "iwc") {
+      // 侧栏窄：再点一次已展开的板块 = 收起。
+      state.iwcPlateSn = state.iwcPlateSn === sn ? "" : sn;
+      updateChartDock();
+    } else {
+      state.iwcPlateSn = sn;
+      updateOtherStage();
+    }
+    void ensureIwcQuotes();
+    return;
+  }
+  const iwcStock = target.closest<HTMLElement>("[data-iwc-stock]");
+  if (iwcStock) {
+    openChart(iwcStock.dataset.iwcStock || "", iwcStock.dataset.iwcName || "", iwcStock.dataset.iwcMarket || "");
+    return;
+  }
   const otherTab = target.closest<HTMLElement>("[data-other-tab]");
   if (otherTab) {
     const tab = otherTab.dataset.otherTab as OtherTab | undefined;
@@ -1723,8 +2040,10 @@ function handleClick(e: MouseEvent): void {
   }
   const dockTab = target.closest<HTMLElement>("[data-dock-tab]");
   if (dockTab) {
-    state.chartDock = dockTab.dataset.dockTab === "insight" ? "insight" : "watch";
+    const tab = dockTab.dataset.dockTab;
+    state.chartDock = tab === "insight" ? "insight" : tab === "iwc" ? "iwc" : "watch";
     updateChartDock();
+    if (state.chartDock === "iwc") void ensureIwcData();
     return;
   }
   const watchGroupBtn = target.closest<HTMLElement>("[data-watch-group]");
@@ -1970,7 +2289,7 @@ function updateWatchPanel(): void {
 }
 
 function watchStockFromSelection(sel: ChartSelection): WatchStock {
-  const market = sel.market || (sel.code.startsWith("6") ? "1" : "0");
+  const market = sel.market || (sel.code.startsWith("6") || sel.code.startsWith("5") || sel.code.startsWith("9") ? "1" : "0");
   return { code: sel.code, name: sel.name, market };
 }
 
@@ -2822,7 +3141,7 @@ function openSettings(): void {
         <div class="setting-section">
           <div class="setting-label">关于</div>
           <div class="about-text">
-            天梯 · A股涨停复盘　<b>v1.5.0</b><br />
+            天梯 · A股涨停复盘　<b>v1.6.0</b><br />
             涨停与板块数据来自同花顺公开接口，K线来自东方财富公开接口。<br />
             所有数据仅用于学习复盘，不构成投资建议。快捷键：<b>Ctrl K</b> 搜索，<b>← →</b> 切换交易日，<b>Esc</b> 关闭浮层。
           </div>

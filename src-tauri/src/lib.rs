@@ -1,3 +1,4 @@
+mod auth;
 mod commands;
 mod db;
 mod lhb;
@@ -167,7 +168,14 @@ pub fn run() {
             commands::get_lhb_detail,
             commands::get_lhb_agencies,
             commands::get_lhb_institutions,
-            commands::get_lhb_seat_log
+            commands::get_lhb_seat_log,
+            commands::iwc_auth_status,
+            commands::iwc_open_login,
+            commands::iwc_close_login,
+            commands::iwc_login_window_open,
+            commands::iwc_logout,
+            commands::iwc_sync,
+            commands::iwc_get_snapshot
         ])
         .run(tauri::generate_context!())
         .expect("error while running tianti");

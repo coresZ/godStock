@@ -8,6 +8,8 @@ import type {
   IndexQuote,
   KlinePayload,
   IntradayPayload,
+  IwcAuthStatus,
+  IwcSnapshot,
   LhbAgencies,
   LhbBoard,
   LhbDetail,
@@ -115,6 +117,16 @@ export const api = {
     call<LhbInstitutions>("get_lhb_institutions", { date, refresh }),
   getLhbSeatLog: (seatId: string, days = 30) =>
     call<LhbSeatLog>("get_lhb_seat_log", { seatId, days }),
+  /* ——— 其他 · 同花顺自选（问财只读同步） ———
+     iwc_open_login / iwc_close_login / iwc_logout 只开窗 / 清登录态，返回 void；
+     调用方读取 iwcAuthStatus 或轮询确认登录结果。 */
+  iwcAuthStatus: () => call<IwcAuthStatus>("iwc_auth_status"),
+  iwcOpenLogin: () => call<void>("iwc_open_login"),
+  iwcCloseLogin: () => call<void>("iwc_close_login"),
+  iwcLogout: () => call<void>("iwc_logout"),
+  iwcSync: () => call<IwcSnapshot>("iwc_sync"),
+  iwcGetSnapshot: () => call<IwcSnapshot | null>("iwc_get_snapshot"),
+  iwcLoginWindowOpen: () => call<boolean>("iwc_login_window_open"),
 };
 
 export const isTauri = () => Boolean(tauri());

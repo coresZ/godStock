@@ -9,6 +9,8 @@ import type {
   HistoryStatus,
   IndexQuote,
   IntradayPayload,
+  IwcAuthStatus,
+  IwcSnapshot,
   KlineCandle,
   KlinePayload,
   RuleCheck,
@@ -29,6 +31,8 @@ import {
   mockCalendar,
   mockDay,
   mockIndices,
+  mockIwcAuth,
+  mockIwcSnapshot,
   mockKlines,
   mockRecent,
 } from "./mock";
@@ -46,6 +50,31 @@ const mockWatchGroups: WatchGroup[] = [
 ];
 
 const delay = (ms = 220) => new Promise((r) => setTimeout(r, ms));
+
+/* ————————————————— iwc（同花顺自选）dev mock ————————————————— */
+
+/** dev 下可变的登录态与已同步快照：让「登录 → 同步 → 退出」在 pnpm dev 里能走完整流程。 */
+let mockIwcAuthState: IwcAuthStatus = { ...mockIwcAuth };
+let mockIwcSaved: IwcSnapshot | null = null;
+let mockIwcLoginTimer: ReturnType<typeof setTimeout> | null = null;
+let mockIwcLoginWindowOpen = false;
+
+function clearIwcLoginTimer(): void {
+  if (mockIwcLoginTimer) {
+    clearTimeout(mockIwcLoginTimer);
+    mockIwcLoginTimer = null;
+  }
+}
+
+function cloneIwcSnapshot(source: IwcSnapshot, syncedAt = source.syncedAt): IwcSnapshot {
+  return {
+    plates: source.plates.map((plate) => ({ ...plate, members: plate.members.map((stock) => ({ ...stock })) })),
+    selfStocks: source.selfStocks.map((stock) => ({ ...stock })),
+    syncedAt,
+    userId: source.userId,
+    warnings: [...source.warnings],
+  };
+}
 
 /** dev 下模拟 Rust 侧的策略结果缓存，用于验证「过去日期不重复计算」。 */
 const mockScreenCache = new Map<string, { result: ScreenResult; computedAt: number }>();
@@ -429,7 +458,7 @@ function buildAuction(date: string): AuctionResult {
 }
 
 export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
-  await delay(cmd === "get_kline" || cmd === "get_day" ? 460 : 160);
+  await delay(cmd === "get_kline" || cmd === "get_day" || cmd === "iwc_sync" ? 460 : 160);
   switch (cmd) {
     case "get_calendar":
       return mockCalendar as T;
@@ -700,6 +729,48 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
       return buildLhbInstitutions(normalizeDate(args?.date)) as T;
     case "get_lhb_seat_log":
       return buildLhbSeatLog(String(args?.seatId ?? ""), Number(args?.days ?? 30)) as T;
+    case "iwc_auth_status":
+      return { ...mockIwcAuthState } as T;
+    case "iwc_login_window_open":
+      return mockIwcLoginWindowOpen as T;
+    case "iwc_open_login": {
+      // 模拟官方登录窗口：1 秒后视为已完成登录，前端可轮询 iwc_auth_status。
+      clearIwcLoginTimer();
+      mockIwcLoginWindowOpen = true;
+      mockIwcLoginTimer = setTimeout(() => {
+        mockIwcAuthState = {
+          ...mockIwcAuthState,
+          iwcLoggedIn: true,
+          thsLoggedIn: true,
+          userId: mockIwcAuth.userId,
+        };
+        mockIwcLoginWindowOpen = false;
+        mockIwcLoginTimer = null;
+      }, 1000);
+      return undefined as T;
+    }
+    case "iwc_close_login":
+      clearIwcLoginTimer();
+      mockIwcLoginWindowOpen = false;
+      return undefined as T;
+    case "iwc_logout":
+      clearIwcLoginTimer();
+      mockIwcLoginWindowOpen = false;
+      mockIwcAuthState = { iwcLoggedIn: false, thsLoggedIn: false, userId: "" };
+      mockIwcSaved = null;
+      return undefined as T;
+    case "iwc_sync": {
+      if (!mockIwcAuthState.iwcLoggedIn) throw new Error("未登录同花顺，请先登录后再同步自选");
+      const syncedAt = Math.floor(Date.now() / 1000);
+      const saved = cloneIwcSnapshot(
+        { ...mockIwcSnapshot, userId: mockIwcAuthState.userId || mockIwcSnapshot.userId },
+        syncedAt,
+      );
+      mockIwcSaved = saved;
+      return cloneIwcSnapshot(saved) as T;
+    }
+    case "iwc_get_snapshot":
+      return (mockIwcSaved ? cloneIwcSnapshot(mockIwcSaved) : null) as T;
     case "window_control":
     case "open_data_dir":
       return undefined as T;

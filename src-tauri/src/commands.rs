@@ -1339,3 +1339,52 @@ pub async fn get_lhb_seat_log(
         .await
         .map_err(|e| err(e))
 }
+
+/* ——— 其他 · 同花顺自选（问财只读同步） ———
+   登录态由应用内 WebView2 登录窗口建立、靠 WebView2 profile 持久化；
+   这些 command 全部 async：Windows 上在同步 command 里读 cookie 会死锁。 */
+
+/// 登录态（不返回 cookie 值；`user_id` 已脱敏）。读 cookie 失败按「未登录」返回，
+/// 不向调用方抛错 —— 前端进入模块时会无条件读一次。
+#[tauri::command]
+pub async fn iwc_auth_status(app: tauri::AppHandle) -> IwcAuthStatus {
+    crate::auth::auth_status(&app).await
+}
+
+#[tauri::command]
+pub async fn iwc_open_login(app: tauri::AppHandle) -> Result<(), String> {
+    crate::auth::open_login(&app).await.map_err(|e| err(e))
+}
+
+#[tauri::command]
+pub async fn iwc_close_login(app: tauri::AppHandle) -> Result<(), String> {
+    crate::auth::close_login(&app).await.map_err(|e| err(e))
+}
+
+/// 登录窗口是否还开着。前端轮询登录态时用它判断用户是否已手动关窗，
+/// 免得一直停在「等待登录…」直到 5 分钟超时。
+#[tauri::command]
+pub async fn iwc_login_window_open(app: tauri::AppHandle) -> bool {
+    crate::auth::login_window_open(&app).await
+}
+
+#[tauri::command]
+pub async fn iwc_logout(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    crate::auth::logout(&app, &state.db_path).await.map_err(|e| err(e))
+}
+
+#[tauri::command]
+pub async fn iwc_sync(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<IwcSnapshot, String> {
+    crate::auth::sync(&app, &state.client, &state.db_path).await.map_err(|e| err(e))
+}
+
+/// 只读库里的镜像。没有同步记录时返回 `null`（前端类型即 `IwcSnapshot | null`）；
+/// 有记录时 warning 也从库里还原。
+#[tauri::command]
+pub async fn iwc_get_snapshot(state: State<'_, AppState>) -> Result<Option<IwcSnapshot>, String> {
+    let conn = state_conn(&state)?;
+    db::load_iwc_snapshot(&conn).map_err(|e| err(e))
+}

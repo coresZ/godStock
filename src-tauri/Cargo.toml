@@ -1,6 +1,6 @@
 [package]
 name = "tianti"
-version = "1.5.0"
+version = "1.6.0"
 description = "天梯 · A股涨停复盘"
 authors = ["TianTi"]
 edition = "2021"
@@ -34,6 +34,14 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "gzi
 rusqlite = { version = "0.32", features = ["bundled"] }
 chrono = { version = "0.4", features = ["clock"] }
 anyhow = "1"
+
+# WebView2 原生 Cookie 删除（`ICoreWebView2CookieManager::DeleteCookiesWithDomainAndPath`）。
+# tauri/wry 已 transitive 依赖这两个 crate，版本与 Cargo.lock 一致，不新增下载；
+# 只有 Windows 目标会编译。tauri 的 `delete_cookie` 会经过 `cookie::Cookie` 往返丢掉
+# domain 前导点，导致 domain cookie 删不掉，所以这里直接调 COM。
+[target.'cfg(windows)'.dependencies]
+webview2-com = "0.39"
+windows-core = "0.62"
 
 [profile.release]
 opt-level = "s"

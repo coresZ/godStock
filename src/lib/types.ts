@@ -340,6 +340,11 @@ export interface AuctionResult {
   warnings: string[];
 }
 
+/* ————————————————— other · 模块切换 ————————————————— */
+
+/** 「其他」页的两个模块：游资动态（龙虎榜） / 同花顺自选（问财只读同步）。 */
+export type OtherModule = "lhb" | "iwc";
+
 /* ————————————————— other · 游资动态（龙虎榜） ————————————————— */
 
 export type OtherTab = "board" | "yyz" | "org" | "agency";
@@ -501,4 +506,38 @@ export interface LhbSeatLog {
   source: LhbSource;
   fetchedAt: number;
   warning: string | null;
+}
+
+/* ————————————————— other · 同花顺自选（问财只读同步） ————————————————— */
+
+/** 登录态：问财 / 同花顺各自是否已登录，userId 由后端脱敏或原样返回。 */
+export interface IwcAuthStatus {
+  iwcLoggedIn: boolean;
+  thsLoggedIn: boolean;
+  userId: string;
+}
+
+/** 自选股 / 板块成分股。market："1" 沪市 · "0" 深市。 */
+export interface IwcStock {
+  code: string;
+  market: string;
+  name: string;
+}
+
+/** 问财自选板块。condition 非空表示动态条件板块（成分股随条件变化）。 */
+export interface IwcPlate {
+  sn: string;
+  name: string;
+  condition: string;
+  sort: number;
+  members: IwcStock[];
+}
+
+/** 一次只读同步的完整结果；syncedAt 为 unix 秒。 */
+export interface IwcSnapshot {
+  plates: IwcPlate[];
+  selfStocks: IwcStock[];
+  syncedAt: number;
+  userId: string;
+  warnings: string[];
 }

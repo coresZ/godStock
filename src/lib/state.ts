@@ -7,6 +7,8 @@ import type {
   DayPayload,
   HistoryStatus,
   IndexQuote,
+  IwcAuthStatus,
+  IwcSnapshot,
   KlinePayload,
   LhbAgencies,
   LhbBoard,
@@ -14,6 +16,7 @@ import type {
   LhbInstitutions,
   LhbSeatLog,
   LhbSortKey,
+  OtherModule,
   OtherTab,
   Period,
   PoolKind,
@@ -74,7 +77,7 @@ export interface AppState {
   watchGroups: WatchGroup[];
   watchGroupId: number | null;
   watchCollapsed: boolean;
-  chartDock: "watch" | "insight";
+  chartDock: "watch" | "insight" | "iwc";
   timelineOrder: "asc" | "desc";
   dataInfo: DataInfo | null;
   sync: "idle" | "loading" | "live" | "cache" | "error";
@@ -116,6 +119,27 @@ export interface AppState {
   lhbDetailLoading: boolean;
   lhbSeatLoading: boolean;
   lhbError: string | null;
+  /* ——— 其他 · 同花顺自选（问财只读同步） ——— */
+  /** 「其他」页当前模块，切换时只换渲染，不影响游资模块的缓存 */
+  otherModule: OtherModule;
+  iwcAuth: IwcAuthStatus | null;
+  iwcSnapshot: IwcSnapshot | null;
+  /** 首次读取登录态 / 快照中 */
+  iwcLoading: boolean;
+  /** iwc_sync 进行中 */
+  iwcSyncing: boolean;
+  /** 已打开登录窗口，等待用户在同花顺页面完成登录 */
+  iwcLoginPending: boolean;
+  iwcError: string | null;
+  iwcTab: "plates" | "self";
+  /** 当前选中的自选板块 sn */
+  iwcPlateSn: string;
+  /** 成分股/自选股的批量实时行情缓存（code -> 最新价/涨幅） */
+  iwcQuotes: Record<string, { price: number; pct: number }>;
+  /** 行情缓存时间（unix 秒） */
+  iwcQuoteAt: number;
+  /** 板块内成分股排序：默认 / 涨幅高→低 / 低→高 */
+  iwcSort: "default" | "pctDesc" | "pctAsc";
 }
 
 const DEFAULT_CHART_RANGES: Record<Period, number> = {
@@ -265,6 +289,18 @@ export const state: AppState = {
   lhbDetailLoading: false,
   lhbSeatLoading: false,
   lhbError: null,
+  otherModule: "lhb",
+  iwcAuth: null,
+  iwcSnapshot: null,
+  iwcLoading: false,
+  iwcSyncing: false,
+  iwcLoginPending: false,
+  iwcError: null,
+  iwcTab: "plates",
+  iwcPlateSn: "",
+  iwcQuotes: {},
+  iwcQuoteAt: 0,
+  iwcSort: "default",
 };
 
 export function parseHash(): { view: ViewName; code: string } {

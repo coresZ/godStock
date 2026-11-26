@@ -457,3 +457,86 @@ pub struct AuctionResult {
     pub rows: Vec<AuctionRow>,
     pub warnings: Vec<String>,
 }
+
+/* ————————————————— other · 同花顺自选（问财只读同步） ————————————————— */
+
+/// 登录态。`user_id` 已脱敏（后端从 cookie `userid` 取，绝不回传原值）。
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct IwcAuthStatus {
+    pub iwc_logged_in: bool,
+    pub ths_logged_in: bool,
+    pub user_id: String,
+}
+
+/// 自选股 / 板块成分股；`market`："1" 沪市 · "0" 深市。
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct IwcStock {
+    pub code: String,
+    pub market: String,
+    pub name: String,
+}
+
+/// 问财自选板块。`condition` 非空表示动态条件板块（`xn`），静态板块为空。
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct IwcPlate {
+    pub sn: String,
+    pub name: String,
+    pub condition: String,
+    pub sort: i64,
+    pub members: Vec<IwcStock>,
+}
+
+/// 一次只读同步的完整结果；`synced_at` 是 unix 秒。
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct IwcSnapshot {
+    pub plates: Vec<IwcPlate>,
+    pub self_stocks: Vec<IwcStock>,
+    pub synced_at: i64,
+    pub user_id: String,
+    pub warnings: Vec<String>,
+}
+
+/* ————————————————— 测试 ————————————————— */
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn keys(value: serde_json::Value) -> Vec<String> {
+        let mut keys: Vec<String> =
+            value.as_object().expect("object").keys().cloned().collect();
+        keys.sort_unstable();
+        keys
+    }
+
+    /// 前端 `src/lib/types.ts` 已按 camelCase 写好，这里把 4 个契约结构的键名钉住。
+    #[test]
+    fn iwc_contract_camel_case_keys() {
+        assert_eq!(keys(serde_json::to_value(IwcAuthStatus::default()).unwrap()), vec![
+            "iwcLoggedIn",
+            "thsLoggedIn",
+            "userId"
+        ]);
+        assert_eq!(keys(serde_json::to_value(IwcStock::default()).unwrap()), vec![
+            "code", "market", "name"
+        ]);
+        assert_eq!(keys(serde_json::to_value(IwcPlate::default()).unwrap()), vec![
+            "condition",
+            "members",
+            "name",
+            "sn",
+            "sort"
+        ]);
+        assert_eq!(keys(serde_json::to_value(IwcSnapshot::default()).unwrap()), vec![
+            "plates",
+            "selfStocks",
+            "syncedAt",
+            "userId",
+            "warnings"
+        ]);
+    }
+}

@@ -57,7 +57,8 @@ fn tencent_symbol(secid: &str) -> String {
 }
 
 fn stock_symbol(code: &str) -> String {
-    if code.starts_with('6') || code.starts_with('9') {
+    // 6/9 = 沪市 A 股 / B 股，5 = 沪市场内基金（510-518 / 560-563 / 588 / 500 / 501…）。
+    if code.starts_with('6') || code.starts_with('9') || code.starts_with('5') {
         format!("sh{code}")
     } else {
         format!("sz{code}")
@@ -746,7 +747,8 @@ fn parse_days(s: &str) -> Option<i64> {
 }
 
 fn secid(code: &str) -> String {
-    let market = if code.starts_with('6') || code.starts_with('9') {
+    // 与 `stock_symbol` 同一口径：6/9（沪 A / 沪 B）、5（沪市场内基金）走 "1."。
+    let market = if code.starts_with('6') || code.starts_with('9') || code.starts_with('5') {
         "1"
     } else {
         "0"
@@ -773,6 +775,18 @@ fn kline_limit(period: &str) -> i64 {
         "15m" | "30m" | "60m" => 800,
         _ => 500,
     }
+}
+
+/// 场内基金 / ETF 代码：沪 `5` 开头（510-518、560-563、588、500/501…），
+/// 深 `15/16/18` 开头（ETF / LOF / 封闭基金）。
+///
+/// 这类代码的 K 线不能用腾讯前复权接口（`fqkline/get` 对 ETF 固定返回 HTTP 501），
+/// 需要走不复权的 `kline/kline` 接口兜底。
+fn is_fund_code(code: &str) -> bool {
+    code.starts_with('5')
+        || code.starts_with("15")
+        || code.starts_with("16")
+        || code.starts_with("18")
 }
 
 fn parse_kline_json(data: &Value) -> Result<(String, Vec<KlineCandle>)> {
@@ -882,6 +896,32 @@ async fn fetch_tencent_kline(client: &Client, code: &str, period: &str) -> Resul
     };
     let url = format!(
         "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={symbol},{tx_period},,,{},qfq",
+        kline_limit(period)
+    );
+    let json = get_json(client, &url, TX_REFERER).await?;
+    parse_tencent_kline(&json, &symbol, tx_period)
+}
+
+/// 腾讯**不复权**日/周/月线（`kline/kline` 接口）。
+///
+/// 用于 ETF / 场内基金：前复权接口 `fqkline/get` 对基金代码固定 HTTP 501，而这条接口
+/// 所有品种都返回 200。结构与 `parse_tencent_kline` 兼容
+/// （`data.{symbol}.day = [[日期, 开, 收, 高, 低, 量], …]`，先找 `qfq{period}` 再回退
+/// `{period}`，正好命中 `day`）。
+/// 注意：这是**不复权**数据 —— ETF 分红少，可接受；股票仍走前复权接口。
+async fn fetch_tencent_raw_kline(
+    client: &Client,
+    code: &str,
+    period: &str,
+) -> Result<(String, Vec<KlineCandle>)> {
+    let symbol = stock_symbol(code);
+    let tx_period = match period {
+        "week" => "week",
+        "month" => "month",
+        _ => "day",
+    };
+    let url = format!(
+        "https://web.ifzq.gtimg.cn/appstock/app/kline/kline?param={symbol},{tx_period},,,{}",
         kline_limit(period)
     );
     let json = get_json(client, &url, TX_REFERER).await?;
@@ -1063,9 +1103,16 @@ pub async fn fetch_kline(
                     .await
                     .map(|(name, candles)| (name, candles, true)),
                 "1m" => Err(anyhow!("1分钟K线没有备用数据源")),
-                "day" | "week" | "month" => fetch_tencent_kline(client, code, period)
-                    .await
-                    .map(|(name, candles)| (name, candles, false)),
+                "day" | "week" | "month" => {
+                    // ETF / 场内基金：腾讯前复权接口固定 501，直接用不复权接口兜底，
+                    // 不再白试一次。普通股票仍走前复权接口。
+                    let raw = if is_fund_code(code) {
+                        fetch_tencent_raw_kline(client, code, period).await
+                    } else {
+                        fetch_tencent_kline(client, code, period).await
+                    };
+                    raw.map(|(name, candles)| (name, candles, false))
+                }
                 _ => Err(anyhow!("该周期没有备用K线源")),
             };
             fallback.map_err(|e| anyhow!("{primary:#} · 备用源: {e:#}"))
@@ -1481,9 +1528,936 @@ pub async fn search(client: &Client, q: &str) -> Result<Vec<SearchItem>> {
         out.push(SearchItem {
             code: q.to_string(),
             name: String::new(),
-            market: if q.starts_with('6') { "1".into() } else { "0".into() },
+            // 与 `stock_symbol` / `secid` 同一口径：6/9/5 归沪（5 = 沪市场内基金）。
+            market: if q.starts_with('6') || q.starts_with('9') || q.starts_with('5') {
+                "1".into()
+            } else {
+                "0".into()
+            },
             security_type: String::new(),
         });
     }
     Ok(out)
+}
+
+/* ————————————————— 其他 · 同花顺自选（问财 / t.10jqka 只读同步） ————————————————— */
+//
+// 契约与证据见 `.tmp/research-blocks/ths-selfstock-plate-login.md`：脚本（docs/wencai2.js）
+// 不生成任何签名，鉴权完全由 cookie 承担，所以纯 Rust 带上正确的 `Cookie` 头即可复现。
+// 这些函数只负责抓取 + 解析；cookie 从哪来、结果怎么落库由 `auth.rs` 决定。
+
+const IWC_REFERER: &str = "https://www.iwencai.com/";
+const THS_SELF_REFERER: &str = "https://t.10jqka.com.cn/";
+const IWC_JSON_ACCEPT: &str = "application/json, text/plain, */*";
+const IWC_PLATE_GATEWAY: &str =
+    "https://www.iwencai.com/gateway/userstore/iwc/userinfo/self-stock/plate/list";
+const IWC_PLATE_LEGACY: &str = "https://www.iwencai.com/unifiedwap/self-stock/plate/list";
+const THS_SELF_STOCK_URL: &str = "https://t.10jqka.com.cn/newcircle/group/getSelfStockWithMarket";
+
+/// 板块成分股的候选键名。服务端按账号 / 版本返回不同键（脚本 1874-1880 行同样兜底），
+/// 全部试一遍并按代码去重，避免某个键是空数组时漏掉成分股。
+const IWC_MEMBER_KEYS: [&str; 10] = [
+    "list",
+    "stocks",
+    "stock_list",
+    "stockList",
+    "codes",
+    "items",
+    "code_list",
+    "codeList",
+    "stock_codes",
+    "stockCodes",
+];
+
+async fn iwc_request_json(request: reqwest::RequestBuilder, what: &str) -> Result<Value> {
+    let res = request.send().await.with_context(|| format!("request {what}"))?;
+    let status = res.status();
+    let bytes = res.bytes().await.context("read response")?;
+    if !status.is_success() {
+        return Err(anyhow!("{what} HTTP {}", status.as_u16()));
+    }
+    let body = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&bytes);
+    serde_json::from_slice(body).with_context(|| format!("parse json · {what}"))
+}
+
+/// 问财 gateway：`GET .../plate/list?stocks={0|1}&ths=0`。
+async fn fetch_iwc_gateway(
+    client: &Client,
+    cookie: &str,
+    user_id: &str,
+    stocks: u8,
+) -> Result<Vec<IwcPlate>> {
+    let url = format!("{IWC_PLATE_GATEWAY}?stocks={stocks}&ths=0");
+    let mut request = client
+        .get(url)
+        .header(reqwest::header::REFERER, IWC_REFERER)
+        .header(reqwest::header::ACCEPT, IWC_JSON_ACCEPT);
+    if !cookie.is_empty() {
+        request = request.header(reqwest::header::COOKIE, cookie);
+    }
+    if !user_id.is_empty() {
+        request = request.header("X-User-Id", user_id);
+    }
+    let body = iwc_request_json(request, "问财自选板块").await?;
+    iwc_plates_from_body(&body)
+}
+
+/// 问财 legacy 兜底：`POST /unifiedwap/self-stock/plate/list`，body `stocks={0|1}&ths=0`。
+async fn fetch_iwc_legacy(client: &Client, cookie: &str, stocks: u8) -> Result<Vec<IwcPlate>> {
+    let mut request = client
+        .post(IWC_PLATE_LEGACY)
+        .header(reqwest::header::REFERER, IWC_REFERER)
+        .header(reqwest::header::ACCEPT, IWC_JSON_ACCEPT)
+        .header(reqwest::header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .body(format!("stocks={stocks}&ths=0"));
+    if !cookie.is_empty() {
+        request = request.header(reqwest::header::COOKIE, cookie);
+    }
+    let body = iwc_request_json(request, "问财自选板块（旧接口）").await?;
+    iwc_plates_from_body(&body)
+}
+
+/// 拉取问财自选板块：gateway `stocks=1` / `stocks=0` 各请求一次并按 `sn`/`ln` 合并；
+/// 合并后仍有板块缺成分股时走 legacy，完全没成分股则 legacy 的 1 / 0 都试。
+///
+/// 只要有一个变体给出了可识别的板块数组就算成功（数组为空也算 —— 用户确实没有板块）；
+/// **全部变体都失败才返回 Err**，调用方据此保留上一次落库的数据。
+pub async fn fetch_iwc_plates(
+    client: &Client,
+    cookie: &str,
+    user_id: &str,
+) -> Result<Vec<IwcPlate>> {
+    let mut merged: Option<Vec<IwcPlate>> = None;
+    let mut errors: Vec<String> = Vec::new();
+    for stocks in [1u8, 0u8] {
+        match fetch_iwc_gateway(client, cookie, user_id, stocks).await {
+            Ok(list) => {
+                merged = Some(match merged {
+                    Some(previous) => merge_iwc_plates(previous, &list),
+                    None => list,
+                });
+            }
+            Err(error) => errors.push(format!("gateway stocks={stocks}: {error}")),
+        }
+    }
+    let missing = |list: &[IwcPlate]| list.iter().any(|plate| plate.members.is_empty());
+    if merged.as_ref().map(|list| missing(list)).unwrap_or(true) {
+        let any_members = merged
+            .as_ref()
+            .map(|list| list.iter().any(|plate| !plate.members.is_empty()))
+            .unwrap_or(false);
+        let variants: &[u8] = if any_members { &[1] } else { &[1, 0] };
+        for &stocks in variants {
+            match fetch_iwc_legacy(client, cookie, stocks).await {
+                Ok(list) => {
+                    merged = Some(match merged {
+                        Some(previous) => merge_iwc_plates(previous, &list),
+                        None => list,
+                    });
+                    if merged.as_ref().map(|list| !missing(list)).unwrap_or(false) {
+                        break;
+                    }
+                }
+                Err(error) => errors.push(format!("legacy stocks={stocks}: {error}")),
+            }
+        }
+    }
+    let Some(mut plates) = merged else {
+        return Err(anyhow!(iwc_plate_failure_message(&errors)));
+    };
+    finalize_iwc_plates(&mut plates);
+    Ok(plates)
+}
+
+/// 同花顺自选股：`GET t.10jqka.com.cn/newcircle/group/getSelfStockWithMarket`（无参数）。
+/// `errorCode != 0` 视为失败（调用方只加 warning，不阻断板块同步）。
+pub async fn fetch_ths_self_stocks(client: &Client, cookie: &str) -> Result<Vec<IwcStock>> {
+    let mut request = client
+        .get(THS_SELF_STOCK_URL)
+        .header(reqwest::header::REFERER, THS_SELF_REFERER)
+        .header(reqwest::header::ACCEPT, IWC_JSON_ACCEPT);
+    if !cookie.is_empty() {
+        request = request.header(reqwest::header::COOKIE, cookie);
+    }
+    let body = iwc_request_json(request, "同花顺自选股").await?;
+    parse_ths_self_stocks(&body).map_err(|message| anyhow!(message))
+}
+
+/// 失败文案优先级：登录类错误 > 第一条错误 > 空。
+fn iwc_plate_failure_message(errors: &[String]) -> String {
+    let login_like = errors.iter().find(|error| {
+        error.contains("未登") || error.contains("登录") || error.to_lowercase().contains("login")
+    });
+    if login_like.is_some() {
+        return "问财未登录或登录已失效，请重新登录".to_string();
+    }
+    match errors.first() {
+        Some(error) => format!("问财自选板块拉取失败：{error}"),
+        None => "问财自选板块为空".to_string(),
+    }
+}
+
+/// 响应提取（脚本 1828-1836 行的同序优先级）：
+/// `result` → `data` → `data.plate_list` → `data.list` → `result.plate_list`。
+fn extract_iwc_plate_list(body: &Value) -> Option<&Vec<Value>> {
+    if let Some(list) = body.get("result").and_then(Value::as_array) {
+        return Some(list);
+    }
+    if let Some(list) = body.get("data").and_then(Value::as_array) {
+        return Some(list);
+    }
+    if let Some(list) = body.pointer("/data/plate_list").and_then(Value::as_array) {
+        return Some(list);
+    }
+    if let Some(list) = body.pointer("/data/list").and_then(Value::as_array) {
+        return Some(list);
+    }
+    if let Some(list) = body.pointer("/result/plate_list").and_then(Value::as_array) {
+        return Some(list);
+    }
+    None
+}
+
+/// 文本字段：字符串取 trim，数字转字符串（`id` / `sn` 偶尔是数字），其余空串。
+fn iwc_text(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.trim().to_string(),
+        Value::Number(number) => number.to_string(),
+        _ => String::new(),
+    }
+}
+
+/// 错误文案：`status_msg` / `message` / `error`（脚本 1837-1840 行）。
+fn iwc_response_error(body: &Value) -> String {
+    for key in ["status_msg", "message", "error"] {
+        let text = iwc_text(&body[key]);
+        if !text.is_empty() {
+            return text;
+        }
+    }
+    String::new()
+}
+
+/// 只有带 `sn` / `ln` / `name` 之一的对象数组才算板块列表（脚本 1881 行）。
+fn is_iwc_plate_list(list: &[Value]) -> bool {
+    list.is_empty()
+        || list.iter().any(|item| {
+            item.get("sn").is_some() || item.get("ln").is_some() || item.get("name").is_some()
+        })
+}
+
+fn iwc_plates_from_body(body: &Value) -> Result<Vec<IwcPlate>> {
+    let message = iwc_response_error(body);
+    let Some(raw) = extract_iwc_plate_list(body) else {
+        return Err(anyhow!(if message.is_empty() {
+            "问财自选板块返回结构无法识别".to_string()
+        } else {
+            message
+        }));
+    };
+    if !is_iwc_plate_list(raw) {
+        return Err(anyhow!(if message.is_empty() {
+            "问财自选板块返回结构无法识别".to_string()
+        } else {
+            message
+        }));
+    }
+    // 空数组 + 错误文案：过期会话会回 200 + `{result: [], status_msg: "未登录"}`，
+    // 这种不能当成「用户没有板块」，否则一次失败就会把镜像覆盖成空。
+    // 真正没有板块的账号只回空数组、不带任何错误文案。
+    if raw.is_empty() && !message.is_empty() {
+        return Err(anyhow!(message));
+    }
+    let plates: Vec<IwcPlate> = raw.iter().filter_map(parse_iwc_plate).collect();
+    // 数组非空却一条板块都解析不出来 = 结构漂移 / 非预期响应，同样按失败处理，
+    // 不能拿空结果覆盖上一次的镜像。
+    if !raw.is_empty() && plates.is_empty() {
+        return Err(anyhow!(if message.is_empty() {
+            "问财自选板块返回结构无法识别".to_string()
+        } else {
+            message
+        }));
+    }
+    Ok(plates)
+}
+
+fn parse_iwc_plate(item: &Value) -> Option<IwcPlate> {
+    if !item.is_object() {
+        return None;
+    }
+    let sn = {
+        let raw = iwc_text(&item["sn"]);
+        if raw.is_empty() {
+            iwc_text(&item["id"])
+        } else {
+            raw
+        }
+    };
+    let name = {
+        let raw = iwc_text(&item["ln"]);
+        if raw.is_empty() {
+            iwc_text(&item["name"])
+        } else {
+            raw
+        }
+    };
+    if sn.is_empty() && name.is_empty() {
+        return None;
+    }
+    Some(IwcPlate {
+        sn,
+        name,
+        // `xn` = 动态板块的问财查询条件，原样存（静态板块为空）。
+        condition: iwc_text(&item["xn"]),
+        sort: 0,
+        members: parse_iwc_plate_members(item),
+    })
+}
+
+/// 成分股容器可能被包装成数组 / 字符串（`"600000|000001"`）/ 对象（key 是代码）。
+fn iwc_member_items(raw: &Value) -> Vec<Value> {
+    match raw {
+        Value::Array(items) => items.clone(),
+        Value::String(text) => text
+            .split(|c: char| c == '|' || c == ',' || c == ';' || c.is_whitespace())
+            .map(str::trim)
+            .filter(|piece| !piece.is_empty())
+            .map(|piece| Value::String(piece.to_string()))
+            .collect(),
+        Value::Object(map) => map.keys().map(|key| Value::String(key.clone())).collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn parse_iwc_plate_members(item: &Value) -> Vec<IwcStock> {
+    let mut members: Vec<IwcStock> = Vec::new();
+    for key in IWC_MEMBER_KEYS {
+        let Some(raw) = item.get(key) else { continue };
+        for value in iwc_member_items(raw) {
+            let Some(stock) = parse_iwc_stock(&value) else { continue };
+            if members.iter().any(|existing| existing.code == stock.code) {
+                continue;
+            }
+            members.push(stock);
+        }
+    }
+    members
+}
+
+/// 一个成分股元素：`"600000"` / `"sh600000"` / `"600000.SH"` / `"600000_17"` / `{mark,stock}`。
+fn parse_iwc_stock(value: &Value) -> Option<IwcStock> {
+    let code = match value {
+        Value::String(text) => iwc_code_from_text(text),
+        Value::Number(number) => iwc_code_from_text(&number.to_string()),
+        Value::Object(map) => iwc_code_from_object(map),
+        _ => None,
+    }?;
+    let market = iwc_market_of(&code)?;
+    Some(IwcStock { code, market, name: String::new() })
+}
+
+fn iwc_six_digits(text: &str) -> Option<String> {
+    let text = text.trim();
+    if text.len() == 6 && text.chars().all(|c| c.is_ascii_digit()) {
+        Some(text.to_string())
+    } else {
+        None
+    }
+}
+
+fn iwc_code_from_text(text: &str) -> Option<String> {
+    let raw = text.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let lowered = raw.to_ascii_lowercase();
+    // sh/sz 前缀；hk/ny/oq/am 是港股 / 美股，一律丢弃。
+    if let Some(rest) = lowered.strip_prefix("sh").or_else(|| lowered.strip_prefix("sz")) {
+        return iwc_six_digits(rest);
+    }
+    if ["hk", "ny", "oq", "am"].iter().any(|prefix| lowered.starts_with(prefix)) {
+        return None;
+    }
+    // 600000.SH / 600000.SZ / 600000.SS
+    if let Some((head, tail)) = raw.split_once('.') {
+        if matches!(tail.to_ascii_uppercase().as_str(), "SH" | "SZ" | "SS") {
+            return iwc_six_digits(head);
+        }
+    }
+    // 600000_17 / 17_600000 / 600000-17 …
+    for separator in ['_', ',', ':', '-', '|'] {
+        if let Some((head, tail)) = raw.split_once(separator) {
+            if let Some(code) = iwc_six_digits(head) {
+                return Some(code);
+            }
+            if let Some(code) = iwc_six_digits(tail) {
+                return Some(code);
+            }
+        }
+    }
+    iwc_six_digits(raw)
+}
+
+fn iwc_code_from_object(map: &serde_json::Map<String, Value>) -> Option<String> {
+    let lookup = |keys: &[&str]| -> Option<&Value> {
+        keys.iter().find_map(|key| {
+            map.iter()
+                .find(|(field, _)| field.eq_ignore_ascii_case(key))
+                .map(|(_, value)| value)
+        })
+    };
+    let stock = lookup(&["stock", "code", "stock_code", "stockcode", "hqcode", "symbol", "c"]);
+    let has_mark = lookup(&["mark", "market", "marketid", "market_id", "marketcode", "m"]).is_some();
+    // `{mark, stock}` 是接口的「市场 + 代码」写法；`mark` 只表示这是股票项，
+    // 市场最终仍按代码前缀归一，避免 17/33 之类映射不一致。
+    if has_mark {
+        if let Some(stock) = stock {
+            if let Some(code) = iwc_code_value(stock) {
+                return Some(code);
+            }
+        }
+        return None;
+    }
+    stock.and_then(iwc_code_value)
+}
+
+fn iwc_code_value(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => iwc_code_from_text(text),
+        Value::Number(number) => iwc_code_from_text(&number.to_string()),
+        _ => None,
+    }
+}
+
+/// 只接受**可交易的 A 股 / 场内基金代码**，返回市场 "1"=沪 / "0"=深（北交所按深处理）。
+///
+/// 必须按前缀白名单判断，不能只看首位数字：同花顺板块指数 / 中证指数（`885640`、
+/// `884036`、`881166`、`886020`、`930986`、`399001` …）都是 6 位数字，按首位会把它们
+/// 当成分股混进板块，还会连累行情名称补全。
+///
+/// 前缀白名单：
+/// - 沪市：`600/601/603/605/688/689`（股票）、`5`（场内基金 / ETF：510-518、560-563、
+///   588、500 / 501 …）→ `"1"`
+/// - 深市：`000/001/002/003/300/301`（股票）、`15/16/18`（ETF / LOF / 封闭基金）→ `"0"`
+/// - 北交所：`43/83/87/920` → `"0"`
+///
+/// 其余一律丢弃：指数 `88xxxx`（88 不在 83/87 白名单内，天然排除）/ `399xxx` /
+/// `93xxxx` / `99xxxx`，债券 `110/113/123/127/128`，B 股 `900/200` 等。
+fn iwc_market_of(code: &str) -> Option<String> {
+    if code.len() != 6 || !code.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    const SHANGHAI_STOCK: [&str; 6] = ["600", "601", "603", "605", "688", "689"];
+    const SHENZHEN_STOCK: [&str; 6] = ["000", "001", "002", "003", "300", "301"];
+    const SHENZHEN_FUND: [&str; 3] = ["15", "16", "18"];
+    const BEIJING: [&str; 4] = ["43", "83", "87", "920"];
+    let shanghai = SHANGHAI_STOCK.iter().any(|prefix| code.starts_with(prefix))
+        // 沪市场内基金 / ETF 都在 5 开头
+        || code.starts_with('5');
+    let shenzhen = SHENZHEN_STOCK.iter().any(|prefix| code.starts_with(prefix))
+        // 深市 ETF / LOF / 封闭基金
+        || SHENZHEN_FUND.iter().any(|prefix| code.starts_with(prefix));
+    if shanghai {
+        Some("1".to_string())
+    } else if shenzhen {
+        Some("0".to_string())
+    } else if BEIJING.iter().any(|prefix| code.starts_with(prefix)) {
+        // 北交所：前端 market 只有 "1"/"0" 两档，按深市处理。
+        Some("0".to_string())
+    } else {
+        None
+    }
+}
+
+/// 按 `sn`（缺失时用 `ln` 名称）合并两次响应：主响应保持顺序，次响应补板块 / 成分股。
+fn merge_iwc_plates(primary: Vec<IwcPlate>, secondary: &[IwcPlate]) -> Vec<IwcPlate> {
+    let mut merged = primary;
+    for plate in secondary {
+        let index = merged.iter().position(|existing| {
+            if !plate.sn.is_empty() && !existing.sn.is_empty() {
+                existing.sn == plate.sn
+            } else {
+                !plate.name.is_empty() && existing.name == plate.name
+            }
+        });
+        match index {
+            Some(index) => {
+                let target = &mut merged[index];
+                if target.sn.is_empty() {
+                    target.sn = plate.sn.clone();
+                }
+                if target.name.is_empty() {
+                    target.name = plate.name.clone();
+                }
+                if target.condition.is_empty() {
+                    target.condition = plate.condition.clone();
+                }
+                for member in &plate.members {
+                    if !target.members.iter().any(|existing| existing.code == member.code) {
+                        target.members.push(member.clone());
+                    }
+                }
+            }
+            None => merged.push(plate.clone()),
+        }
+    }
+    merged
+}
+
+/// 收尾：`sort` = 合并后的数组顺序（0 起）；缺名给「未命名板块」；`sn` 缺失时给一个
+/// 快照内唯一键（`iwc_plate.sn` 是主键，空串会让多个板块互相覆盖）。
+fn finalize_iwc_plates(plates: &mut [IwcPlate]) {
+    for (index, plate) in plates.iter_mut().enumerate() {
+        plate.sort = index as i64;
+        if plate.name.trim().is_empty() {
+            plate.name = "未命名板块".to_string();
+        }
+        if plate.sn.trim().is_empty() {
+            plate.sn = format!("plate-{index}");
+        }
+    }
+}
+
+/// `{ errorCode, errorMsg, result: [{ marketid, code }] }`。
+///
+/// A 股判定**完全交给代码前缀**（`iwc_market_of`：沪 600/601/603/605/688/689、
+/// 深 000/001/002/003/300/301、北交所 43/83/87/920），marketid 只用于显式排除港股 /
+/// 美股等非 A 股市场 —— 这样北交所（`920001` / `830799`）不会因为 marketid 不在白名单里
+/// 被误杀；两者冲突时以代码前缀为准。
+fn parse_ths_self_stocks(body: &Value) -> std::result::Result<Vec<IwcStock>, String> {
+    let error_code = int(&body["errorCode"]);
+    if error_code != 0 {
+        let message = string(&body["errorMsg"]);
+        return Err(if message.is_empty() {
+            format!("同花顺自选股接口返回 errorCode={error_code}")
+        } else {
+            message
+        });
+    }
+    let mut stocks: Vec<IwcStock> = Vec::new();
+    if let Some(list) = body["result"].as_array() {
+        for item in list {
+            // marketid 只排除明确的非 A 股市场：177 港股、169 美股 NY、185 美股 OQ。
+            // （16 / 120 等是沪市通道，代码前缀才决定是不是 A 股。）
+            if matches!(int(&item["marketid"]), 177 | 169 | 185) {
+                continue;
+            }
+            let Some(code) = iwc_code_value(&item["code"]) else { continue };
+            let Some(market) = iwc_market_of(&code) else { continue };
+            if stocks.iter().any(|existing| existing.code == code) {
+                continue;
+            }
+            stocks.push(IwcStock { code, market, name: String::new() });
+        }
+    }
+    Ok(stocks)
+}
+
+/* ————————————————— 测试 ————————————————— */
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn stock(code: &str, market: &str) -> IwcStock {
+        IwcStock { code: code.to_string(), market: market.to_string(), name: String::new() }
+    }
+
+    fn plate(sn: &str, name: &str, condition: &str, members: Vec<IwcStock>) -> IwcPlate {
+        IwcPlate {
+            sn: sn.to_string(),
+            name: name.to_string(),
+            condition: condition.to_string(),
+            sort: 0,
+            members,
+        }
+    }
+
+    /// 问财响应有 5 种包装，提取顺序固定；未登录时是 200 + `status_msg`。
+    #[test]
+    fn iwc_extract_response_wrappers() {
+        let bodies = [
+            json!({"result": [{"sn": "1", "ln": "A"}]}),
+            json!({"data": [{"sn": "2", "ln": "B"}]}),
+            json!({"data": {"plate_list": [{"sn": "3", "ln": "C"}]}}),
+            json!({"data": {"list": [{"sn": "4", "ln": "D"}]}}),
+            json!({"result": {"plate_list": [{"sn": "5", "ln": "E"}]}}),
+        ];
+        let sns: Vec<String> = bodies
+            .iter()
+            .map(|body| iwc_plates_from_body(body).unwrap()[0].sn.clone())
+            .collect();
+        assert_eq!(sns, vec!["1", "2", "3", "4", "5"]);
+
+        // 空板块数组是合法的「没有自选板块」。
+        assert!(iwc_plates_from_body(&json!({"result": []})).unwrap().is_empty());
+
+        // 未登录 / 接口报错：文案要能透出给前端。
+        assert_eq!(
+            iwc_plates_from_body(&json!({"status_msg": "未登录"})).unwrap_err().to_string(),
+            "未登录"
+        );
+        assert_eq!(
+            iwc_plates_from_body(&json!({"data": {}, "message": "请先登录"})).unwrap_err().to_string(),
+            "请先登录"
+        );
+        assert!(iwc_plates_from_body(&json!({"foo": 1}))
+            .unwrap_err()
+            .to_string()
+            .contains("无法识别"));
+        // 业务字段不是数组（HTML 兜底页会被解析成对象）也算失败。
+        assert!(iwc_plates_from_body(&json!({"result": "oops"})).is_err());
+    }
+
+    /// 成分股 11 种键名里的 10 个 + 字符串 / 对象两种元素形态。
+    #[test]
+    fn iwc_parse_member_shapes() {
+        let body = json!({
+            "sn": "sn-1",
+            "ln": "我的板块",
+            "xn": "涨幅>5%",
+            "list": ["600000", "sh600519", "000001.SZ", "300750_33", "600000", "512880"],
+            "stocks": [
+                {"mark": 17, "stock": "601318"},
+                {"mark": "33", "stock": "002594"},
+                {"mark": "177", "stock": "00700"},
+                {"code": "688981"}
+            ]
+        });
+        let parsed = parse_iwc_plate(&body).unwrap();
+        assert_eq!(parsed.sn, "sn-1");
+        assert_eq!(parsed.name, "我的板块");
+        assert_eq!(parsed.condition, "涨幅>5%");
+        let codes: Vec<&str> = parsed.members.iter().map(|member| member.code.as_str()).collect();
+        // 去重 + 丢弃非 6 位 / 港美股（hk00700），ETF（512880）保留
+        assert_eq!(
+            codes,
+            vec!["600000", "600519", "000001", "300750", "512880", "601318", "002594", "688981"]
+        );
+        let markets: Vec<&str> = parsed.members.iter().map(|member| member.market.as_str()).collect();
+        // 512880（沪 ETF）market 为 "1"
+        assert_eq!(markets, vec!["1", "1", "0", "0", "1", "1", "0", "1"]);
+    }
+
+    /// 板块成分股里混入的指数 / 债券 / B 股必须丢弃；ETF / 场内基金必须保留
+    /// （问财的「ETF」板块整板都是 5/15/16/18 开头）。
+    #[test]
+    fn iwc_parse_keeps_funds_and_drops_index_codes() {
+        let body = json!({
+            "sn": "sn-2",
+            "ln": "ETF 与指数混入",
+            "list": [
+                // 指数：沪深指数 / 同花顺板块指数
+                "885640", "884036", "881166", "886020", "930986", "399001",
+                // 债券 / B 股
+                "113050", "123456", "110038", "127045", "900901", "200011",
+                // 股票 + 北交所
+                "600519", "000001", "300750", "688981", "830799", "920001",
+                // 场内基金：沪 ETF / 深 ETF / LOF
+                "510300", "512880", "588000", "159915", "161725"
+            ]
+        });
+        let parsed = parse_iwc_plate(&body).unwrap();
+        let codes: Vec<&str> = parsed.members.iter().map(|member| member.code.as_str()).collect();
+        assert_eq!(
+            codes,
+            vec![
+                "600519", "000001", "300750", "688981", "830799", "920001", "510300", "512880",
+                "588000", "159915", "161725"
+            ]
+        );
+        let markets: Vec<&str> = parsed.members.iter().map(|member| member.market.as_str()).collect();
+        assert_eq!(
+            markets,
+            vec!["1", "0", "0", "1", "0", "0", "1", "1", "1", "0", "0"]
+        );
+    }
+
+    /// 行情 / K 线符号映射：沪市场内基金（5 开头）必须走 sh / "1."，否则 ETF 取不到数据。
+    #[test]
+    fn fund_symbols_map_to_shanghai() {
+        assert_eq!(stock_symbol("510300"), "sh510300");
+        assert_eq!(stock_symbol("512880"), "sh512880");
+        assert_eq!(stock_symbol("588000"), "sh588000");
+        assert_eq!(stock_symbol("159915"), "sz159915");
+        assert_eq!(stock_symbol("161725"), "sz161725");
+        assert_eq!(stock_symbol("600519"), "sh600519");
+        assert_eq!(stock_symbol("000001"), "sz000001");
+        assert_eq!(secid("510300"), "1.510300");
+        assert_eq!(secid("512880"), "1.512880");
+        assert_eq!(secid("159915"), "0.159915");
+        assert_eq!(secid("161725"), "0.161725");
+        assert_eq!(secid("600519"), "1.600519");
+        assert_eq!(secid("000001"), "0.000001");
+        // 已带 sh/sz 前缀的形式不经过这两个函数
+        assert_eq!(secid_from_symbol("sh510300"), "1.510300");
+        assert_eq!(secid_from_symbol("sz159915"), "0.159915");
+    }
+
+    /// ETF / 场内基金识别：决定 K 线走腾讯不复权接口还是前复权接口。
+    #[test]
+    fn fund_code_detection() {
+        for code in ["510300", "512880", "588000", "501050", "159915", "161725", "184801"] {
+            assert!(is_fund_code(code), "{code} 应识别为场内基金");
+        }
+        for code in ["600519", "000001", "300750", "688981", "830799", "920001", "110038"] {
+            assert!(!is_fund_code(code), "{code} 不应识别为场内基金");
+        }
+    }
+
+    /// 腾讯不复权日线（ETF K 线兜底）：`data.sh510300.day = [[日期, 开, 收, 高, 低, 量], …]`。
+    /// 复用 `parse_tencent_kline`（先 `qfq{period}`，回退 `{period}`），这里走 `day` 分支。
+    #[test]
+    fn parse_tencent_raw_etf_kline() {
+        let json = json!({
+            "code": 0,
+            "msg": "",
+            "data": {
+                "sh510300": {
+                    "day": [
+                        ["2026-10-29", "4.050", "4.059", "4.066", "4.045", "19800000.000"],
+                        ["2026-10-30", "4.059", "4.065", "4.126", "4.046", "21130014.000"],
+                        ["2026-11-02", "4.070", "4.052", "4.075", "4.040", "15300000.000"]
+                    ],
+                    "qt": { "sh510300": ["1", "沪深300ETF", "510300", "4.052"] }
+                }
+            }
+        });
+        let (name, candles) = parse_tencent_kline(&json, "sh510300", "day").unwrap();
+        assert_eq!(name, "沪深300ETF");
+        assert_eq!(candles.len(), 3);
+        let first = &candles[0];
+        assert_eq!(first.date, "2026-10-29");
+        assert!((first.open - 4.050).abs() < 1e-9);
+        assert!((first.close - 4.059).abs() < 1e-9);
+        assert!((first.high - 4.066).abs() < 1e-9);
+        assert!((first.low - 4.045).abs() < 1e-9);
+        assert!((first.volume - 19_800_000.0).abs() < 1e-6);
+        // 涨跌幅按前一根收盘价算
+        let second = &candles[1];
+        assert!((second.pct - ((4.065 / 4.059 - 1.0) * 100.0)).abs() < 1e-9);
+        assert_eq!(candles[2].date, "2026-11-02");
+        assert!((candles[2].close - 4.052).abs() < 1e-9);
+
+        // 前复权节点优先（股票仍走 `qfqday`），raw 节点作为回退。
+        let both = json!({"data": {"sh600519": {
+            "qfqday": [["2026-10-30", "1500", "1510", "1520", "1490", "30000"]],
+            "day": [["2026-10-30", "1600", "1610", "1620", "1590", "30000"]]
+        }}});
+        let (_, candles) = parse_tencent_kline(&both, "sh600519", "day").unwrap();
+        assert!((candles[0].close - 1510.0).abs() < 1e-9);
+    }
+
+    /// 容器是字符串 / 对象 / 空数组 / 不同键名时的容错。
+    #[test]
+    fn iwc_parse_member_containers() {
+        let from_text = parse_iwc_plate(&json!({"sn": "a", "ln": "x", "stocks": "600000|000001;300750"}))
+            .unwrap();
+        assert_eq!(from_text.members.len(), 3);
+
+        let from_object =
+            parse_iwc_plate(&json!({"sn": "b", "ln": "y", "codes": {"600000": true, "000001": 1}}))
+                .unwrap();
+        assert_eq!(from_object.members.len(), 2);
+
+        // 第一个候选键是空数组时仍要尝试后面的键。
+        let fallback_key = parse_iwc_plate(&json!({"sn": "c", "ln": "z", "list": [], "items": ["600519"]}))
+            .unwrap();
+        assert_eq!(fallback_key.members.len(), 1);
+
+        assert!(parse_iwc_plate(&json!({"sn": "d", "ln": "w"})).unwrap().members.is_empty());
+        assert!(parse_iwc_plate(&json!({"foo": 1})).is_none());
+        // `name` / `id` 是 `ln` / `sn` 的兜底键（脚本同样接受）。
+        assert_eq!(parse_iwc_plate(&json!({"id": 7, "name": "旧接口"})).unwrap().sn, "7");
+    }
+
+    /// `stocks=1` / `stocks=0` 两份响应按 sn（缺失时 ln）合并。
+    #[test]
+    fn iwc_merge_by_sn_then_name() {
+        let primary = vec![
+            plate("10", "涨幅榜", "", vec![stock("600000", "1")]),
+            plate("", "静态自选", "", Vec::new()),
+        ];
+        let secondary = vec![
+            plate("10", "", "", vec![stock("000001", "0"), stock("600000", "1")]),
+            plate("", "静态自选", "", vec![stock("600519", "1")]),
+            plate("11", "动态板块", "涨幅>5%", Vec::new()),
+        ];
+        let merged = merge_iwc_plates(primary, &secondary);
+        assert_eq!(merged.len(), 3);
+        assert_eq!(merged[0].members.len(), 2);
+        assert_eq!(merged[0].members[1].code, "000001");
+        assert_eq!(merged[1].members.len(), 1);
+        assert_eq!(merged[1].members[0].code, "600519");
+        assert_eq!(merged[2].condition, "涨幅>5%");
+    }
+
+    /// 收尾：sort = 数组顺序，缺名 / 缺 sn 时兜底。
+    #[test]
+    fn iwc_finalize_sorts_names_and_sn() {
+        let mut plates = vec![
+            plate("a", "", "", Vec::new()),
+            plate("", "B", "", Vec::new()),
+        ];
+        finalize_iwc_plates(&mut plates);
+        assert_eq!(plates[0].sort, 0);
+        assert_eq!(plates[0].name, "未命名板块");
+        assert_eq!(plates[1].sort, 1);
+        assert_eq!(plates[1].sn, "plate-1");
+    }
+
+    /// 市场归一：沪股票 + 沪场内基金（5）/ 深股票 + 深基金（15/16/18）/ 北交所，
+    /// 指数、债券、B 股一律丢弃。
+    #[test]
+    fn iwc_market_normalize() {
+        // 真实 A 股：沪 600/601/603/605/688/689，深 000/001/002/003/300/301，北交所 43/83/87/920
+        assert_eq!(iwc_market_of("600000").as_deref(), Some("1"));
+        assert_eq!(iwc_market_of("688981").as_deref(), Some("1"));
+        assert_eq!(iwc_market_of("601318").as_deref(), Some("1"));
+        assert_eq!(iwc_market_of("000001").as_deref(), Some("0"));
+        assert_eq!(iwc_market_of("002594").as_deref(), Some("0"));
+        assert_eq!(iwc_market_of("300750").as_deref(), Some("0"));
+        assert_eq!(iwc_market_of("301001").as_deref(), Some("0"));
+        assert_eq!(iwc_market_of("830799").as_deref(), Some("0"));
+        assert_eq!(iwc_market_of("430047").as_deref(), Some("0"));
+        assert_eq!(iwc_market_of("920001").as_deref(), Some("0"));
+        // 场内基金：沪 5 开头（ETF/LOF），深 15/16/18
+        assert_eq!(iwc_market_of("510300").as_deref(), Some("1"));
+        assert_eq!(iwc_market_of("512880").as_deref(), Some("1"));
+        assert_eq!(iwc_market_of("588000").as_deref(), Some("1"));
+        assert_eq!(iwc_market_of("501050").as_deref(), Some("1"));
+        assert_eq!(iwc_market_of("159915").as_deref(), Some("0"));
+        assert_eq!(iwc_market_of("161725").as_deref(), Some("0"));
+        assert_eq!(iwc_market_of("184801").as_deref(), Some("0"));
+        // 同花顺板块指数 / 中证指数混在成分股里时要丢弃
+        assert_eq!(iwc_market_of("885640"), None);
+        assert_eq!(iwc_market_of("884036"), None);
+        assert_eq!(iwc_market_of("881166"), None);
+        assert_eq!(iwc_market_of("886020"), None);
+        assert_eq!(iwc_market_of("930986"), None);
+        assert_eq!(iwc_market_of("399001"), None);
+        assert_eq!(iwc_market_of("990001"), None);
+        // 债券 / B 股 / 非 6 位
+        assert_eq!(iwc_market_of("110038"), None);
+        assert_eq!(iwc_market_of("113050"), None);
+        assert_eq!(iwc_market_of("127045"), None);
+        assert_eq!(iwc_market_of("128136"), None);
+        assert_eq!(iwc_market_of("900901"), None);
+        assert_eq!(iwc_market_of("200011"), None);
+        assert_eq!(iwc_market_of("60000"), None);
+        // 非 6 位的文本形态同样被丢弃
+        assert_eq!(iwc_code_from_text("sh600000").as_deref(), Some("600000"));
+        assert_eq!(iwc_code_from_text("600000.SH").as_deref(), Some("600000"));
+        assert_eq!(iwc_code_from_text("hk00700"), None);
+        assert_eq!(iwc_code_from_text("nyAAPL"), None);
+    }
+
+    /// t.10jqka 自选股：marketid 映射 + errorCode 判定 + 非 A 股过滤。
+    #[test]
+    fn ths_self_stocks_error_code() {
+        let ok = json!({"errorCode": 0, "errorMsg": "", "result": [
+            {"marketid": 17, "code": "600000"},
+            {"marketid": 33, "code": "000001"},
+            {"marketid": 20, "code": "601318"},
+            {"marketid": 36, "code": "002594"},
+            {"marketid": 177, "code": "00700"},
+            // 未知 marketid 但代码是 A 股：以代码前缀为准，保留
+            {"marketid": 99, "code": "600519"},
+            // 北交所：marketid 不在旧的沪/深白名单里，但代码前缀 87/920 有效，必须保留
+            {"marketid": 16, "code": "830799"},
+            {"marketid": 120, "code": "920001"},
+            // 港股 / 美股 marketid 即使代码看起来像 A 股也排除
+            {"marketid": 177, "code": "601988"},
+            {"marketid": 169, "code": "600036"},
+            // 场内基金（ETF）也要保留：沪 5 开头 / 深 15 开头
+            {"marketid": 17, "code": "510300"},
+            {"marketid": 33, "code": "159915"},
+            // 债券仍丢弃
+            {"marketid": 17, "code": "113050"},
+            {"marketid": 33, "code": "123456"},
+            {"marketid": 17, "code": "600000"}
+        ]});
+        let stocks = parse_ths_self_stocks(&ok).unwrap();
+        let pairs: Vec<(&str, &str)> =
+            stocks.iter().map(|item| (item.code.as_str(), item.market.as_str())).collect();
+        assert_eq!(
+            pairs,
+            vec![
+                ("600000", "1"),
+                ("000001", "0"),
+                ("601318", "1"),
+                ("002594", "0"),
+                ("600519", "1"),
+                ("830799", "0"),
+                ("920001", "0"),
+                ("510300", "1"),
+                ("159915", "0"),
+            ]
+        );
+
+        assert_eq!(
+            parse_ths_self_stocks(&json!({"errorCode": 4, "errorMsg": "未登录", "result": []}))
+                .unwrap_err(),
+            "未登录"
+        );
+        // errorCode 是字符串 "4" 也要判失败；无 errorMsg 时给可读文案。
+        let failed = parse_ths_self_stocks(&json!({"errorCode": "4", "errorMsg": ""})).unwrap_err();
+        assert!(failed.contains("errorCode=4"));
+        // 缺 result 时按空列表处理，不算失败。
+        assert!(parse_ths_self_stocks(&json!({"errorCode": 0})).unwrap().is_empty());
+    }
+
+    /// 空板块数组 + 错误文案 = 失败（过期会话）；只有「空且无文案」才是真的没有板块。
+    #[test]
+    fn iwc_empty_plates_with_error_text_is_failure() {
+        assert_eq!(
+            iwc_plates_from_body(&json!({"result": [], "status_msg": "未登录"}))
+                .unwrap_err()
+                .to_string(),
+            "未登录"
+        );
+        assert_eq!(
+            iwc_plates_from_body(&json!({"data": [], "message": "登录已过期"})).unwrap_err().to_string(),
+            "登录已过期"
+        );
+        // 空且无文案：合法（用户确实没有自选板块）。
+        assert!(iwc_plates_from_body(&json!({"result": []})).unwrap().is_empty());
+        assert!(iwc_plates_from_body(&json!({"data": [], "status_msg": " "})).unwrap().is_empty());
+        // 有数据时错误文案不参与判定（部分接口会顺带返回过期提示）。
+        assert_eq!(
+            iwc_plates_from_body(&json!({"result": [{"sn": "1", "ln": "A"}], "message": "提示"}))
+                .unwrap()
+                .len(),
+            1
+        );
+        // 数组非空却一条板块都解析不出来（字段漂移 / 非预期包装）：按失败处理，
+        // 不能拿空结果覆盖上一次的镜像。
+        assert!(iwc_plates_from_body(&json!({"result": [{"foo": 1}, "bar", 42]}))
+            .unwrap_err()
+            .to_string()
+            .contains("无法识别"));
+        assert_eq!(
+            iwc_plates_from_body(&json!({"result": [{"foo": 1}], "message": "服务异常"}))
+                .unwrap_err()
+                .to_string(),
+            "服务异常"
+        );
+        // 带 sn/ln 键但值为空：过了「是不是板块数组」的判定，却解析不出任何板块，
+        // 同样按失败处理（不能被当成「空账号」覆盖镜像）。
+        assert!(iwc_plates_from_body(&json!({"result": [{"sn": null, "ln": null}, {"sn": "", "ln": ""}]}))
+            .unwrap_err()
+            .to_string()
+            .contains("无法识别"));
+    }
+
+    /// 失败文案：登录类错误优先给「请重新登录」。
+    #[test]
+    fn iwc_failure_message_priority() {
+        let login = vec!["gateway stocks=1: 未登录".to_string()];
+        assert_eq!(iwc_plate_failure_message(&login), "问财未登录或登录已失效，请重新登录");
+        let other = vec!["gateway stocks=1: HTTP 500".to_string()];
+        assert!(iwc_plate_failure_message(&other).contains("HTTP 500"));
+        assert_eq!(iwc_plate_failure_message(&[]), "问财自选板块为空");
+    }
 }

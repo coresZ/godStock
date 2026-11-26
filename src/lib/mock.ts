@@ -3,6 +3,8 @@ import type {
   CalendarInfo,
   DayPayload,
   IndexQuote,
+  IwcAuthStatus,
+  IwcSnapshot,
   KlinePayload,
   LhbAgencies,
   LhbAgency,
@@ -541,3 +543,67 @@ export function buildLhbSeatLog(seatId: string, days: number): LhbSeatLog {
 }
 
 export const mockRecent: SearchItem[] = [{"code":"002520","name":"日发精机","market":"0","securityType":"深A"},{"code":"600519","name":"贵州茅台","market":"1","securityType":"沪A"},{"code":"000001","name":"平安银行","market":"0","securityType":"深A"}];
+
+/* ————————————————— other · 同花顺自选（问财只读同步）dev mock ————————————————— */
+
+/** dev 默认登录态：打开页面即视为已登录，便于直接查看同步后的自选。 */
+export const mockIwcAuth: IwcAuthStatus = {
+  iwcLoggedIn: true,
+  thsLoggedIn: true,
+  userId: "mock****88",
+};
+
+/** 3 个自选板块（含 1 个动态条件板块）+ 6 只自选股；股票取真实 A 股，方便核对 K 线。 */
+export const mockIwcSnapshot: IwcSnapshot = {
+  plates: [
+    {
+      sn: "1001",
+      name: "AI算力硬件",
+      condition: "",
+      sort: 1,
+      members: [
+        { code: "300308", market: "0", name: "中际旭创" },
+        { code: "300502", market: "0", name: "新易盛" },
+        { code: "300394", market: "0", name: "天孚通信" },
+        { code: "601138", market: "1", name: "工业富联" },
+        { code: "002281", market: "0", name: "光迅科技" },
+      ],
+    },
+    {
+      sn: "1002",
+      name: "低空经济",
+      condition: "",
+      sort: 2,
+      members: [
+        { code: "002085", market: "0", name: "万丰奥威" },
+        { code: "001696", market: "0", name: "宗申动力" },
+        { code: "000099", market: "0", name: "中信海直" },
+      ],
+    },
+    {
+      sn: "1003",
+      name: "昨日涨停·动态",
+      condition: "近3日涨停且换手率>10%",
+      sort: 3,
+      members: [
+        { code: "605255", market: "1", name: "天普股份" },
+        { code: "002148", market: "0", name: "北纬科技" },
+        { code: "600715", market: "1", name: "文投控股" },
+      ],
+    },
+  ],
+  selfStocks: [
+    { code: "600519", market: "1", name: "贵州茅台" },
+    { code: "300308", market: "0", name: "中际旭创" },
+    { code: "300059", market: "0", name: "东方财富" },
+    { code: "300750", market: "0", name: "宁德时代" },
+    { code: "002594", market: "0", name: "比亚迪" },
+    { code: "601318", market: "1", name: "中国平安" },
+  ],
+  syncedAt: Math.floor(Date.now() / 1000) - 1800,
+  userId: "mock****88",
+  warnings: [
+    "板块「昨日涨停·动态」是动态条件板块，成分股随问财条件变化，每次同步可能不同",
+    "自选股中有 1 只已停牌，导入本地自选时按原样保留",
+  ],
+};

@@ -292,6 +292,36 @@ pub fn init(path: &Path) -> Result<()> {
             updated_at INTEGER NOT NULL
         );
 
+        -- 「其他 · 同花顺自选」只读镜像。登录态不落库（cookie 留在 WebView2
+        -- profile 里），这里只存一次同步的结果；每次同步整体覆盖。
+        CREATE TABLE IF NOT EXISTS iwc_plate (
+            sn TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            condition TEXT NOT NULL DEFAULT '',
+            sort INTEGER NOT NULL DEFAULT 0,
+            updated_at INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS iwc_plate_member (
+            sn TEXT NOT NULL,
+            code TEXT NOT NULL,
+            market TEXT NOT NULL DEFAULT '',
+            seq INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (sn, code)
+        );
+        CREATE TABLE IF NOT EXISTS iwc_self_stock (
+            code TEXT NOT NULL,
+            market TEXT NOT NULL DEFAULT '',
+            seq INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (code, market)
+        );
+        CREATE TABLE IF NOT EXISTS iwc_sync (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            user_id TEXT NOT NULL DEFAULT '',
+            synced_at INTEGER NOT NULL DEFAULT 0,
+            ok INTEGER NOT NULL DEFAULT 0,
+            message TEXT NOT NULL DEFAULT ''
+        );
+
         CREATE INDEX IF NOT EXISTS idx_limit_up_streak ON limit_up (date, streak);
         CREATE INDEX IF NOT EXISTS idx_tick_date ON limit_up_tick (date, code);
         CREATE INDEX IF NOT EXISTS idx_sectors_date ON sectors (date, limit_up_num);
@@ -1249,6 +1279,10 @@ pub fn clear_cache(conn: &mut Connection) -> Result<()> {
         "intraday_bars",
         "index_daily",
         "stock_stats_day",
+        "iwc_plate",
+        "iwc_plate_member",
+        "iwc_self_stock",
+        "iwc_sync",
     ] {
         tx.execute(&format!("DELETE FROM {}", table), [])?;
     }
@@ -1814,4 +1848,419 @@ pub fn save_profile(conn: &Connection, p: &StrategyProfile) -> Result<()> {
         ],
     )?;
     Ok(())
+}
+
+/* ————————————————— iwc（「其他 · 同花顺自选」只读镜像） ————————————————— */
+
+/// 覆盖式写入一次同步结果：四张表在一个事务里先删后插，中途失败不会留下半份数据。
+/// 登录态不落库 —— cookie 留在 WebView2 profile，这里只镜像板块 / 成分股 / 自选股
+/// 与最后一次同步的元信息（`user_id` 已脱敏）。
+pub fn save_iwc_snapshot(conn: &mut Connection, snapshot: &IwcSnapshot) -> Result<()> {
+    let synced_at = if snapshot.synced_at > 0 { snapshot.synced_at } else { now_ts() };
+    let tx = conn.transaction()?;
+    tx.execute("DELETE FROM iwc_plate", [])?;
+    tx.execute("DELETE FROM iwc_plate_member", [])?;
+    tx.execute("DELETE FROM iwc_self_stock", [])?;
+    {
+        let mut plate_stmt = tx.prepare(
+            "INSERT OR REPLACE INTO iwc_plate(sn,name,condition,sort,updated_at) VALUES (?1,?2,?3,?4,?5)",
+        )?;
+        let mut member_stmt = tx.prepare(
+            "INSERT OR REPLACE INTO iwc_plate_member(sn,code,market,seq) VALUES (?1,?2,?3,?4)",
+        )?;
+        for (index, plate) in snapshot.plates.iter().enumerate() {
+            plate_stmt.execute(params![plate.sn, plate.name, plate.condition, index as i64, synced_at])?;
+            for (seq, member) in plate.members.iter().enumerate() {
+                member_stmt.execute(params![plate.sn, member.code, member.market, seq as i64])?;
+            }
+        }
+    }
+    {
+        let mut stmt =
+            tx.prepare("INSERT OR REPLACE INTO iwc_self_stock(code,market,seq) VALUES (?1,?2,?3)")?;
+        for (seq, stock) in snapshot.self_stocks.iter().enumerate() {
+            stmt.execute(params![stock.code, stock.market, seq as i64])?;
+        }
+    }
+    tx.execute(
+        "INSERT INTO iwc_sync(id,user_id,synced_at,ok,message) VALUES (1,?1,?2,?3,?4)
+         ON CONFLICT(id) DO UPDATE SET user_id=excluded.user_id, synced_at=excluded.synced_at,
+           ok=excluded.ok, message=excluded.message",
+        params![
+            snapshot.user_id,
+            synced_at,
+            if snapshot.warnings.is_empty() { 1 } else { 0 },
+            snapshot.warnings.join("；"),
+        ],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// 股票名索引：自选板块 / 自选股接口只返回代码，名称先用最近一条涨停历史补，
+/// 历史覆盖不到的票（绝大多数自选股）再退回本地搜索缓存；都没有就留空串。
+fn iwc_stock_names(conn: &Connection) -> Result<HashMap<String, String>> {
+    let mut names: HashMap<String, String> = HashMap::new();
+    let latest: String = conn
+        .query_row("SELECT COALESCE(MAX(date),'') FROM limit_up_history", [], |r| r.get(0))
+        .unwrap_or_default();
+    if !latest.is_empty() {
+        let mut st = conn.prepare("SELECT code,name FROM limit_up_history WHERE date=?1")?;
+        let iter =
+            st.query_map(params![latest], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        for row in iter {
+            let (code, name) = row?;
+            if !name.trim().is_empty() {
+                names.insert(code, name);
+            }
+        }
+    }
+    let mut st = conn.prepare("SELECT code,name FROM stocks WHERE name <> ''")?;
+    let iter = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+    for row in iter {
+        let (code, name) = row?;
+        names.entry(code).or_insert(name);
+    }
+    Ok(names)
+}
+
+/// 只读构造快照：板块按 `sort`，成分股与自选股按 `seq`；名称用 `iwc_stock_names` 补。
+///
+/// 没有同步记录（或 `synced_at = 0`）时返回 `None` —— 前端 `iwcGetSnapshot` 的类型
+/// 就是 `IwcSnapshot | null`，用它区分「从没同步过」和「同步过但为空」。
+/// `iwc_sync.ok = 0` 时把 `message` 按「；」拆回 warnings，重启后「同步提示」不丢。
+pub fn load_iwc_snapshot(conn: &Connection) -> Result<Option<IwcSnapshot>> {
+    let sync_row: Option<(String, i64, i64, String)> = conn
+        .query_row("SELECT user_id, synced_at, ok, message FROM iwc_sync WHERE id=1", [], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })
+        .optional()?;
+    let Some((user_id, synced_at, ok, message)) = sync_row else {
+        return Ok(None);
+    };
+    if synced_at <= 0 {
+        return Ok(None);
+    }
+    let warnings: Vec<String> = if ok == 0 {
+        message
+            .split('；')
+            .map(str::trim)
+            .filter(|piece| !piece.is_empty())
+            .map(str::to_string)
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let names = iwc_stock_names(conn)?;
+    let mut plates: Vec<IwcPlate> = Vec::new();
+    {
+        let mut st =
+            conn.prepare("SELECT sn,name,condition,sort FROM iwc_plate ORDER BY sort ASC, rowid ASC")?;
+        let iter = st.query_map([], |r| {
+            Ok(IwcPlate {
+                sn: r.get(0)?,
+                name: r.get(1)?,
+                condition: r.get(2)?,
+                sort: r.get(3)?,
+                members: Vec::new(),
+            })
+        })?;
+        for row in iter {
+            plates.push(row?);
+        }
+    }
+    let mut index: HashMap<String, usize> = HashMap::new();
+    for (position, plate) in plates.iter().enumerate() {
+        index.insert(plate.sn.clone(), position);
+    }
+    {
+        let mut st =
+            conn.prepare("SELECT sn,code,market FROM iwc_plate_member ORDER BY sn ASC, seq ASC")?;
+        let iter = st.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+        })?;
+        for row in iter {
+            let (sn, code, market) = row?;
+            if let Some(&position) = index.get(&sn) {
+                let name = names.get(&code).cloned().unwrap_or_default();
+                plates[position].members.push(IwcStock { code, market, name });
+            }
+        }
+    }
+    let mut self_stocks = Vec::new();
+    {
+        let mut st = conn.prepare("SELECT code,market FROM iwc_self_stock ORDER BY seq ASC")?;
+        let iter = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        for row in iter {
+            let (code, market) = row?;
+            let name = names.get(&code).cloned().unwrap_or_default();
+            self_stocks.push(IwcStock { code, market, name });
+        }
+    }
+    Ok(Some(IwcSnapshot { plates, self_stocks, synced_at, user_id, warnings }))
+}
+
+/// 退出登录时清空镜像（四张表）。
+pub fn clear_iwc(conn: &Connection) -> Result<()> {
+    for table in ["iwc_plate", "iwc_plate_member", "iwc_self_stock", "iwc_sync"] {
+        conn.execute(&format!("DELETE FROM {}", table), [])?;
+    }
+    Ok(())
+}
+
+/* ————————————————— 股票名称目录（`stocks` 表） ————————————————— */
+
+/// 批量取本地股票目录里已有的名称（只返回有名字的代码）。名称补全前先查这里，
+/// 避免每次同步都为同一批自选股重发行情请求；分批是为了避开 SQLite 变量上限。
+pub fn stock_names(conn: &Connection, codes: &[String]) -> Result<HashMap<String, String>> {
+    let mut names: HashMap<String, String> = HashMap::new();
+    for chunk in codes.chunks(500) {
+        if chunk.is_empty() {
+            continue;
+        }
+        let placeholders = vec!["?"; chunk.len()].join(",");
+        let sql = format!("SELECT code,name FROM stocks WHERE name <> '' AND code IN ({placeholders})");
+        let mut st = conn.prepare(&sql)?;
+        let iter = st.query_map(rusqlite::params_from_iter(chunk.iter()), |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        for row in iter {
+            let (code, name) = row?;
+            names.insert(code, name);
+        }
+    }
+    Ok(names)
+}
+
+/// 批量补名称：只补空名称、**不改 `updated_at`**（否则上千只自选股会把本地搜索的
+/// 「最近使用」排序刷满）。新插入的行 `updated_at = 0`，天然排在搜索列表末尾。
+pub fn fill_stock_names(conn: &Connection, rows: &[(String, String, String)]) -> Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    {
+        let mut st = tx.prepare(
+            "INSERT INTO stocks(code,name,market,updated_at) VALUES (?1,?2,?3,0)
+             ON CONFLICT(code) DO UPDATE SET name=excluded.name WHERE stocks.name = ''",
+        )?;
+        for (code, name, market) in rows {
+            st.execute(params![code, name, market])?;
+        }
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/* ————————————————— 测试 ————————————————— */
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    fn temp_db(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("tianti-{}-{}", std::process::id(), tag));
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("test.db");
+        let _ = fs::remove_file(&path);
+        path
+    }
+
+    /// 「其他 · 同花顺自选」四张表的建表 + 覆盖写 + 只读回读 + 清空。
+    /// SQL 只有跑起来才会暴露错误，所以这里用真的 SQLite 文件走一遍。
+    #[test]
+    fn iwc_snapshot_round_trip() {
+        let path = temp_db("iwc");
+        init(&path).unwrap();
+        let mut conn = connect(&path).unwrap();
+
+        // 没有同步记录时是 None（前端类型 `IwcSnapshot | null`）。
+        assert!(load_iwc_snapshot(&conn).unwrap().is_none());
+
+        let snapshot = IwcSnapshot {
+            plates: vec![
+                IwcPlate {
+                    sn: "sn-1".into(),
+                    name: "涨幅榜".into(),
+                    condition: String::new(),
+                    sort: 0,
+                    members: vec![
+                        IwcStock { code: "600000".into(), market: "1".into(), name: String::new() },
+                        IwcStock { code: "000001".into(), market: "0".into(), name: String::new() },
+                    ],
+                },
+                IwcPlate {
+                    sn: "sn-2".into(),
+                    name: "动态板块".into(),
+                    condition: "涨幅>5%".into(),
+                    sort: 1,
+                    members: Vec::new(),
+                },
+            ],
+            self_stocks: vec![IwcStock { code: "300750".into(), market: "0".into(), name: String::new() }],
+            synced_at: 1_700_000_000,
+            user_id: "123****90".into(),
+            warnings: vec!["同花顺自选股拉取失败：未登录".into()],
+        };
+        save_iwc_snapshot(&mut conn, &snapshot).unwrap();
+
+        // 名称：库里没有涨停历史 / 搜索缓存时留空串，不能凭空造。
+        let loaded = load_iwc_snapshot(&conn).unwrap().unwrap();
+        assert_eq!(loaded.plates.len(), 2);
+        assert_eq!(loaded.plates[0].sn, "sn-1");
+        assert_eq!(loaded.plates[1].condition, "涨幅>5%");
+        assert_eq!(loaded.plates[0].members.len(), 2);
+        assert_eq!(loaded.plates[0].members[0].code, "600000");
+        assert_eq!(loaded.plates[0].members[1].code, "000001");
+        assert_eq!(loaded.plates[0].members[0].name, "");
+        assert_eq!(loaded.self_stocks.len(), 1);
+        assert_eq!(loaded.self_stocks[0].market, "0");
+        assert_eq!(loaded.synced_at, 1_700_000_000);
+        assert_eq!(loaded.user_id, "123****90");
+        // `ok = 0` 时把 message 拆回 warnings（重启后「同步提示」不丢）。
+        assert_eq!(loaded.warnings, vec!["同花顺自选股拉取失败：未登录"]);
+
+        // 名称补齐：最近一条涨停历史 + `stocks` 表（`auth::sync` 用 `fill_stock_names`
+        // 把行情名称写在这里，`iwc_get_snapshot` 才能读回）。
+        conn.execute(
+            "INSERT INTO limit_up_history(date,code,name) VALUES ('20240102','600000','浦发银行')",
+            [],
+        )
+        .unwrap();
+        fill_stock_names(
+            &conn,
+            &[("300750".to_string(), "宁德时代".to_string(), "0".to_string())],
+        )
+        .unwrap();
+        let named = load_iwc_snapshot(&conn).unwrap().unwrap();
+        assert_eq!(named.plates[0].members[0].name, "浦发银行");
+        assert_eq!(named.plates[0].members[1].name, "");
+        assert_eq!(named.self_stocks[0].name, "宁德时代");
+
+        // 覆盖写：第二次同步只留下新数据（旧板块 / 成分股 / 自选股全部消失）；
+        // 无 warning 时 ok = 1，回读 warnings 为空。
+        let second = IwcSnapshot {
+            plates: vec![IwcPlate {
+                sn: "sn-3".into(),
+                name: "新板块".into(),
+                condition: String::new(),
+                sort: 0,
+                members: vec![IwcStock { code: "601318".into(), market: "1".into(), name: String::new() }],
+            }],
+            self_stocks: Vec::new(),
+            synced_at: 1_700_000_100,
+            user_id: "123****90".into(),
+            warnings: Vec::new(),
+        };
+        save_iwc_snapshot(&mut conn, &second).unwrap();
+        let replaced = load_iwc_snapshot(&conn).unwrap().unwrap();
+        assert_eq!(replaced.plates.len(), 1);
+        assert_eq!(replaced.plates[0].members.len(), 1);
+        assert!(replaced.self_stocks.is_empty());
+        assert_eq!(replaced.synced_at, 1_700_000_100);
+        assert!(replaced.warnings.is_empty());
+
+        // 退出登录：四张表清空，快照回到 None。
+        clear_iwc(&conn).unwrap();
+        assert!(load_iwc_snapshot(&conn).unwrap().is_none());
+
+        drop(conn);
+        let _ = fs::remove_file(&path);
+    }
+
+    /// `clear_cache` 必须把只读镜像一起清掉（否则「清缓存」后旧板块还挂在界面上）。
+    #[test]
+    fn clear_cache_includes_iwc_tables() {
+        let path = temp_db("iwc-clear");
+        init(&path).unwrap();
+        let mut conn = connect(&path).unwrap();
+        save_iwc_snapshot(
+            &mut conn,
+            &IwcSnapshot {
+                plates: vec![IwcPlate {
+                    sn: "sn-1".into(),
+                    name: "板块".into(),
+                    condition: String::new(),
+                    sort: 0,
+                    members: vec![IwcStock { code: "600000".into(), market: "1".into(), name: String::new() }],
+                }],
+                self_stocks: vec![IwcStock { code: "000001".into(), market: "0".into(), name: String::new() }],
+                synced_at: 1,
+                user_id: "1****".into(),
+                warnings: Vec::new(),
+            },
+        )
+        .unwrap();
+        clear_cache(&mut conn).unwrap();
+        assert!(load_iwc_snapshot(&conn).unwrap().is_none());
+        drop(conn);
+        let _ = fs::remove_file(&path);
+    }
+
+    /// 名称目录：批量取已有名称；补名称只填空名、不改 `updated_at`（不刷搜索排序）。
+    #[test]
+    fn stock_name_lookup_and_fill() {
+        let path = temp_db("iwc-names");
+        init(&path).unwrap();
+        let conn = connect(&path).unwrap();
+
+        // 已搜索过的股票：有名称 + 较新的 updated_at。
+        upsert_stock(&conn, "600000", "浦发银行", "1").unwrap();
+        conn.execute("UPDATE stocks SET updated_at=1700000000 WHERE code='600000'", []).unwrap();
+        // 有行但没名称（例如只出现在搜索历史里）。
+        upsert_stock(&conn, "000001", "", "0").unwrap();
+        conn.execute("UPDATE stocks SET updated_at=1690000000 WHERE code='000001'", []).unwrap();
+
+        let codes = vec![
+            "600000".to_string(),
+            "000001".to_string(),
+            "300750".to_string(),
+        ];
+        let names = stock_names(&conn, &codes).unwrap();
+        assert_eq!(names.get("600000").map(String::as_str), Some("浦发银行"));
+        assert_eq!(names.get("000001"), None);
+        assert_eq!(names.get("300750"), None);
+
+        // 只补空名：600000 不会被改；新行 300750 插入时 updated_at = 0。
+        fill_stock_names(
+            &conn,
+            &[
+                ("600000".to_string(), "不应该覆盖".to_string(), "1".to_string()),
+                ("000001".to_string(), "平安银行".to_string(), "0".to_string()),
+                ("300750".to_string(), "宁德时代".to_string(), "0".to_string()),
+            ],
+        )
+        .unwrap();
+
+        let (name, updated_at): (String, i64) = conn
+            .query_row("SELECT name,updated_at FROM stocks WHERE code='600000'", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(name, "浦发银行");
+        assert_eq!(updated_at, 1_700_000_000);
+
+        let (name, updated_at): (String, i64) = conn
+            .query_row("SELECT name,updated_at FROM stocks WHERE code='000001'", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(name, "平安银行");
+        assert_eq!(updated_at, 1_690_000_000);
+
+        let (name, updated_at, market): (String, i64, String) = conn
+            .query_row("SELECT name,updated_at,market FROM stocks WHERE code='300750'", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .unwrap();
+        assert_eq!(name, "宁德时代");
+        assert_eq!(updated_at, 0);
+        assert_eq!(market, "0");
+
+        drop(conn);
+        let _ = fs::remove_file(&path);
+    }
 }

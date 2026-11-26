@@ -3852,7 +3852,7 @@ dependencies = [
 
 [[package]]
 name = "tianti"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3863,6 +3863,8 @@ dependencies = [
  "serde_json",
  "tauri",
  "tauri-build",
+ "webview2-com",
+ "windows-core",
  "windows-sys 0.61.2",
 ]
 
