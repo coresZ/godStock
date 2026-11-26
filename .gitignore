@@ -4,6 +4,8 @@ src-tauri/target/
 dist-test*/
 dist-final-check/
 .tmp/
+.omc/
+
 
 # runtime data and binaries
 release/data/

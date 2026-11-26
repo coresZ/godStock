@@ -8,6 +8,11 @@ import type {
   IndexQuote,
   KlinePayload,
   IntradayPayload,
+  LhbAgencies,
+  LhbBoard,
+  LhbDetail,
+  LhbInstitutions,
+  LhbSeatLog,
   StockQuote,
   Period,
   ScreenResult,
@@ -100,6 +105,16 @@ export const api = {
   windowControl: (action: "drag" | "minimize" | "maximize" | "close") =>
     call<void>("window_control", { action }),
   openDataDir: () => call<void>("open_data_dir"),
+  /* ——— 其他 · 游资动态（龙虎榜） ——— */
+  getLhbBoard: (date: string, refresh = false) => call<LhbBoard>("get_lhb_board", { date, refresh }),
+  getLhbDetail: (code: string, date: string, refresh = false) =>
+    call<LhbDetail>("get_lhb_detail", { code, date, refresh }),
+  getLhbAgencies: (date: string, refresh = false) =>
+    call<LhbAgencies>("get_lhb_agencies", { date, refresh }),
+  getLhbInstitutions: (date: string, refresh = false) =>
+    call<LhbInstitutions>("get_lhb_institutions", { date, refresh }),
+  getLhbSeatLog: (seatId: string, days = 30) =>
+    call<LhbSeatLog>("get_lhb_seat_log", { seatId, days }),
 };
 
 export const isTauri = () => Boolean(tauri());

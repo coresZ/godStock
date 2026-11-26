@@ -1,10 +1,12 @@
 mod commands;
 mod db;
+mod lhb;
 mod models;
 mod source;
 mod splash;
 mod strategy;
 mod win;
+mod yyz_tags;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -160,7 +162,12 @@ pub fn run() {
             commands::get_auction,
             commands::export_text,
             commands::window_control,
-            commands::open_data_dir
+            commands::open_data_dir,
+            commands::get_lhb_board,
+            commands::get_lhb_detail,
+            commands::get_lhb_agencies,
+            commands::get_lhb_institutions,
+            commands::get_lhb_seat_log
         ])
         .run(tauri::generate_context!())
         .expect("error while running tianti");

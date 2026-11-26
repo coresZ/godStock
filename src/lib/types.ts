@@ -1,7 +1,7 @@
 export type Theme = "dark" | "light";
 export type Period = "1m" | "15m" | "30m" | "60m" | "day" | "week" | "month" | "year";
 export type ChartMode = "kline" | "timeshare";
-export type ViewName = "ladder" | "pool" | "timeline" | "chart" | "strategy";
+export type ViewName = "ladder" | "pool" | "timeline" | "chart" | "strategy" | "other";
 export type PoolKind = "limitUp" | "openLimit" | "limitDown";
 export type StrategyTab = "firstToSecond" | "auction" | "library";
 
@@ -294,6 +294,10 @@ export interface ScreenResult {
   warnings: string[];
   history: HistoryStatus;
   hasAmount: boolean;
+  /** 直接命中「同日期 + 同参数 + 同历史覆盖」的缓存 */
+  cached: boolean;
+  /** 结果生成时间（unix 秒），用于界面展示缓存新鲜度 */
+  computedAt: number;
 }
 
 export interface StrategyProfile {
@@ -334,4 +338,167 @@ export interface AuctionResult {
   inWindow: boolean;
   rows: AuctionRow[];
   warnings: string[];
+}
+
+/* ————————————————— other · 游资动态（龙虎榜） ————————————————— */
+
+export type OtherTab = "board" | "yyz" | "org" | "agency";
+export type LhbSource = "network" | "cache";
+export type LhbSortKey = "net" | "pct" | "seats";
+
+/** 龙虎榜买 / 卖席位。金额单位：元；tags 来自本地游资名号库。 */
+export interface LhbSeat {
+  id: string;
+  name: string;
+  buy: number;
+  sell: number;
+  net: number;
+  tags: string[];
+  /** 0 无 · 1 一线游资 · 2 顶级游资 · 3 知名游资（接口 YouZiIcon） */
+  level: number;
+  /** 关联席位（接口 AssocIcon） */
+  assoc: boolean;
+  /** 昨日上榜买 / 卖次数（接口 ytdbusin），0 表示无 */
+  ydayBuy: number;
+  ydaySell: number;
+}
+
+/** 一只票当日可能因多个上榜理由各有一组买卖席位。 */
+export interface LhbReasonBlock {
+  reasons: string[];
+  buyTotal: number;
+  sellTotal: number;
+  buy: LhbSeat[];
+  sell: LhbSeat[];
+}
+
+export interface LhbDetail {
+  code: string;
+  name: string;
+  /** YYYYMMDD */
+  date: string;
+  pct: number;
+  turnoverRate: number;
+  /** 流通市值（亿元） */
+  circulation: number;
+  netBuy: number;
+  seatCount: number;
+  /** 近期上榜日期，新 → 旧，YYYYMMDD */
+  onTime: string[];
+  blocks: LhbReasonBlock[];
+  source: LhbSource;
+  fetchedAt: number;
+  warning: string | null;
+}
+
+export interface LhbStock {
+  code: string;
+  name: string;
+  pct: number;
+  netBuy: number;
+  seats: number;
+  turnover: number;
+  turnoverRate: number;
+  floatCap: number;
+  marketCap: number;
+  /** “5板” / “3天2板” / “首板” / ""（东财涨停池补充，失败为空） */
+  board: string;
+  sector: string;
+}
+
+export interface LhbBoard {
+  /** 前端请求的日期，YYYYMMDD */
+  requestedDate: string;
+  /** 实际有数据的日期，YYYYMMDD；无数据回退时与 requestedDate 不同 */
+  date: string;
+  fallback: boolean;
+  rows: LhbStock[];
+  source: LhbSource;
+  fetchedAt: number;
+  warning: string | null;
+}
+
+export interface LhbAgency {
+  id: string;
+  name: string;
+  buy: number;
+  sell: number;
+  net: number;
+  /** 关联个股数（接口 JoinNum） */
+  joinCount: number;
+  tags: string[];
+}
+
+export interface LhbHotSeat {
+  id: string;
+  name: string;
+  buy: number;
+  sell: number;
+  net: number;
+}
+
+/** 按游资名号聚合的席位榜（同一席位命中多个名号时分别计入）。 */
+export interface LhbHotMoneyTag {
+  tag: string;
+  buy: number;
+  sell: number;
+  net: number;
+  seats: LhbHotSeat[];
+}
+
+export interface LhbAgencies {
+  date: string;
+  rows: LhbAgency[];
+  hot: LhbHotMoneyTag[];
+  source: LhbSource;
+  fetchedAt: number;
+  warning: string | null;
+}
+
+export interface LhbInstitution {
+  code: string;
+  name: string;
+  pct: number;
+  netBuy: number;
+  /** 上榜机构数（接口 JoinNum） */
+  orgCount: number;
+  turnover: number;
+  turnoverRate: number;
+  board: string;
+  sector: string;
+}
+
+export interface LhbInstitutions {
+  date: string;
+  rows: LhbInstitution[];
+  source: LhbSource;
+  fetchedAt: number;
+  warning: string | null;
+}
+
+export interface LhbSeatTrade {
+  /** YYYYMMDD */
+  date: string;
+  code: string;
+  name: string;
+  pct: number;
+  buy: number;
+  sell: number;
+  net: number;
+  /** 该条记录来自「三日榜」(D3=1)，与当日榜口径不同 */
+  threeDay: boolean;
+}
+
+/** 单个营业部最近 N 天的上榜个股记录。 */
+export interface LhbSeatLog {
+  seatId: string;
+  rows: LhbSeatTrade[];
+  days: number;
+  /** 上游返回的原始记录数（可能大于 rows.length） */
+  total: number;
+  /** rows 是否被上游上限截断（目前最多 200 条） */
+  truncated: boolean;
+  source: LhbSource;
+  fetchedAt: number;
+  warning: string | null;
 }

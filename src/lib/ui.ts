@@ -42,6 +42,8 @@ const ICONS: Record<string, string> = {
     '<path d="m12 3.8 8 4.2-8 4.2-8-4.2 8-4.2Z"/><path d="m4 12 8 4.2 8-4.2M4 16.3l8 4.2 8-4.2"/>',
   wallet:
     '<path d="M4 8.2c0-1.2 1-2.2 2.2-2.2h11.6c1.2 0 2.2 1 2.2 2.2v9.6c0 1.2-1 2.2-2.2 2.2H6.2c-1.2 0-2.2-1-2.2-2.2Z"/><path d="M4 8.5h16M15.2 13h3.6"/>',
+  grid:
+    '<rect x="4" y="4" width="6.4" height="6.4" rx="1.5"/><rect x="13.6" y="4" width="6.4" height="6.4" rx="1.5"/><rect x="4" y="13.6" width="6.4" height="6.4" rx="1.5"/><rect x="13.6" y="13.6" width="6.4" height="6.4" rx="1.5"/>',
 };
 
 export function icon(name: keyof typeof ICONS | string, size = 20, cls = ""): string {

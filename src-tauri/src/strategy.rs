@@ -2,7 +2,15 @@
 //!
 //! Read-only by design: screening never writes the day snapshot. The only
 //! persistence is the `stock_stats` cache (per-code history aggregates plus the
-//! 20-day gain), which the auction tab reuses for `amount_ratio`.
+//! 20-day gain), which the auction tab reuses for `amount_ratio`. Two more
+//! caches are derived only: `stock_stats_day` (kline aggregates per trade day)
+//! and the in-process `SCREEN_CACHE` (a whole result); neither writes the day
+//! snapshot.
+//!
+//! A past-date miss tops the day series up at most once per hard candidate
+//! before pinning `stock_stats_day`; `date >= today` never pins and only uses
+//! the whole-result cache, so a half-formed intraday result cannot become a
+//! "historical" final when it is reviewed the next day.
 //!
 //! Rule keys (stable, the excluded list reports them verbatim):
 //! `u1`, `first_board`, `f1`..`f5` are hard filters; `s1_one_word`,
@@ -10,6 +18,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
 
 use anyhow::Result;
 use reqwest::Client;
@@ -23,12 +32,62 @@ const HISTORY_WINDOW: usize = 250;
 /// Contract: the excluded list is capped.
 const EXCLUDED_LIMIT: usize = 40;
 
+/* ————————————————— screen result cache ————————————————— */
+
+/// One whole screening result kept in process memory; A→B→A date/tab flipping
+/// returns without re-running the rules.
+struct CachedScreen {
+    result: ScreenResult,
+    computed_at: i64,
+}
+
+static SCREEN_CACHE: OnceLock<Mutex<HashMap<String, CachedScreen>>> = OnceLock::new();
+/// Small on purpose: a session flips between a handful of dates/profiles.
+const SCREEN_CACHE_MAX: usize = 24;
+
+fn screen_cache() -> &'static Mutex<HashMap<String, CachedScreen>> {
+    SCREEN_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Drop every in-process screening result. Called from the "清除缓存" command so
+/// the UI's cache clear really starts from a clean slate (memory + SQLite).
+pub fn clear_screen_cache() {
+    if let Some(cache) = SCREEN_CACHE.get() {
+        if let Ok(mut guard) = cache.lock() {
+            guard.clear();
+        }
+    }
+}
+
+/// `date | profile json | history days | history last date | day fetched_at`.
+/// `fetched_at` is the day snapshot's fingerprint, so a re-loaded day misses.
+fn screen_cache_key(
+    date: &str,
+    profile: &StrategyProfile,
+    history: &HistoryStatus,
+    day: &DayPayload,
+) -> String {
+    format!(
+        "{}|{}|{}|{}|{}",
+        date,
+        serde_json::to_string(profile).unwrap_or_default(),
+        history.days,
+        history.last_date,
+        day.fetched_at
+    )
+}
+
 /* ————————————————— context ————————————————— */
 
 #[derive(Default)]
 struct Ctx {
     /// Trade days ≤ `date`, ascending; always ends with `date`.
     days: Vec<String>,
+    /// Dashed last trade day the day-candle series must reach before kline
+    /// aggregates may be pinned to `date`. Empty when nothing can be required:
+    /// no calendar/history, or `date` is today/future (the bar may not exist
+    /// yet). Pinning with a stale series would freeze the wrong percentages.
+    require_kline_date: String,
     /// The most recent `limit_window_days` of `days`.
     recent: HashSet<String>,
     prev_date: String,
@@ -48,6 +107,9 @@ struct Ctx {
 fn load_ctx(db_path: &Path, date: &str, profile: &StrategyProfile) -> Result<Ctx> {
     let conn = db::connect(db_path)?;
     let mut days = db::trade_days_upto(&conn, date, HISTORY_WINDOW)?;
+    // Captured before `date` is appended below: it is the last trade day the
+    // calendar (or history fallback) actually knows about.
+    let calendar_last = days.last().cloned().unwrap_or_default();
     if days.last().map(|d| d.as_str()) != Some(date) {
         // A loaded snapshot for `date` proves it traded; keep the series dense.
         days.push(date.to_string());
@@ -69,8 +131,16 @@ fn load_ctx(db_path: &Path, date: &str, profile: &StrategyProfile) -> Result<Ctx
     let (_, _, hist_days) = db::history_coverage(&conn)?;
     let window = profile.limit_window_days.clamp(1, 250) as usize;
     let recent: HashSet<String> = days.iter().rev().take(window).cloned().collect();
+    // Today/future cannot require a bar (it may not be published yet); for a
+    // past date the series must reach the last trade day the calendar knows.
+    let require_kline_date = if calendar_last.is_empty() || date >= db::today_ymd().as_str() {
+        String::new()
+    } else {
+        dash(&calendar_last)
+    };
     Ok(Ctx {
         days,
+        require_kline_date,
         recent,
         prev_date,
         history_ok: !prev_codes.is_empty(),
@@ -484,7 +554,9 @@ fn score_candidate(stats: &CandidateStats, profile: &StrategyProfile) -> f64 {
 }
 
 /// Cached aggregates for one code. History fields are recomputed every run
-/// (cheap SQL); the kline fields reuse the cache unless `refresh` was asked for.
+/// (cheap SQL); the kline fields come from `stock_stats_day` (pinned to `date`)
+/// unless `refresh` was asked for. At most two connections per stock: one load
+/// before the await, one save after it (never shared across the await).
 async fn ensure_stats(
     client: &Client,
     db_path: &Path,
@@ -513,26 +585,37 @@ async fn ensure_stats(
         row.last_limit_date = last;
     }
 
-    let cached = db::connect(db_path)
-        .ok()
-        .and_then(|conn| db::load_stock_stats(&conn, &stk.code).ok().flatten());
-    let fresh = cached
-        .as_ref()
-        .map(|c| c.as_of == date && c.computed_at > 0)
-        .unwrap_or(false);
-    if !refresh && fresh {
-        let c = cached.unwrap_or_default();
+    // The day cache key is `(code, as_of)`, so a positive `computed_at` is a hit
+    // on its own — no need to re-check the date. Only covered rows are ever
+    // pinned now, so a hit is trusted (legacy rows are honoured as-is).
+    let day_cached = if refresh {
+        None
+    } else {
+        db::connect(db_path)
+            .ok()
+            .and_then(|conn| db::load_stock_stats_day(&conn, &stk.code, date).ok().flatten())
+            .filter(|c| c.computed_at > 0)
+    };
+    let day_fresh = day_cached.is_none();
+    let mut covered = true;
+    if let Some(c) = day_cached {
+        // Hits are historical pins only: today is never pinned (see the write
+        // gate below), so a hit is always a past-date final.
         row.max_gain_20d = c.max_gain_20d;
         row.max_gain_250d = c.max_gain_250d;
         row.prev_day_amount = c.prev_day_amount;
         row.computed_at = c.computed_at;
     } else {
-        let got = kline_stats(client, db_path, &stk.code, date, refresh).await;
-        match got {
-            Some((gain20, gain250, prev_amount)) => {
-                row.max_gain_20d = gain20;
-                row.max_gain_250d = gain250;
-                row.prev_day_amount = prev_amount;
+        match kline_stats(client, db_path, &stk.code, date, &ctx.require_kline_date, refresh).await {
+            Some(agg) => {
+                row.max_gain_20d = agg.max_gain_20d;
+                row.max_gain_250d = agg.max_gain_250d;
+                row.prev_day_amount = agg.prev_day_amount;
+                // Numbers are usable this run even when stale, but they must
+                // not be pinned to the date (next run retries). A today row is
+                // returned but never pinned either — see the write gate below.
+                covered = agg.covers_date;
+                row.computed_at = db::now_ts();
             }
             None => {
                 row.computed_at = 0;
@@ -542,15 +625,42 @@ async fn ensure_stats(
     }
     row.computed_at = if row.computed_at > 0 { row.computed_at } else { db::now_ts() };
     if let Ok(conn) = db::connect(db_path) {
+        // Old table keeps its "latest value per code" semantics (auction tab).
         if let Err(e) = db::save_stock_stats(&conn, &row) {
             eprintln!("save stock stats failed: {e:#}");
+        }
+        // Pin only when the candle series really reaches the as-of date: a row
+        // written from a stale series would otherwise never be invalidated.
+        // `date >= today` is never pinned — today is still forming, so a
+        // half-formed intraday result must not read as a historical final when
+        // the same date is reviewed tomorrow.
+        if day_fresh && covered && date < db::today_ymd().as_str() {
+            let day_row = db::StockStatsDayRow {
+                code: row.code.clone(),
+                as_of: row.as_of.clone(),
+                max_gain_20d: row.max_gain_20d,
+                max_gain_250d: row.max_gain_250d,
+                prev_day_amount: row.prev_day_amount,
+                computed_at: row.computed_at,
+            };
+            if let Err(e) = db::save_stock_stats_day(&conn, &day_row) {
+                eprintln!("save stock stats day failed: {e:#}");
+            }
         }
     }
     (row, true)
 }
 
 /// `(max_gain_20d, max_gain_250d, prev_day_amount)` from the daily candles.
+///
+/// Only candles up to and including `date` are used: a past-date replay must
+/// not see later bars (look-ahead), and `prev_day_amount` stays `< date`.
 fn kline_metrics(candles: &[KlineCandle], date: &str) -> Option<(f64, f64, f64)> {
+    let today = dash(date);
+    let candles: Vec<&KlineCandle> = candles
+        .iter()
+        .filter(|c| c.date.as_str() <= today.as_str())
+        .collect();
     let closes: Vec<f64> = candles.iter().filter(|c| c.close > 0.0).map(|c| c.close).collect();
     if closes.len() < 2 {
         return None;
@@ -564,7 +674,6 @@ fn kline_metrics(candles: &[KlineCandle], date: &str) -> Option<(f64, f64, f64)>
     } else {
         0.0
     };
-    let today = dash(date);
     let prev_amount = candles
         .iter()
         .filter(|c| c.date.as_str() < today.as_str())
@@ -574,13 +683,49 @@ fn kline_metrics(candles: &[KlineCandle], date: &str) -> Option<(f64, f64, f64)>
     Some((gain20, gain250, prev_amount))
 }
 
+/// Aggregates for one code/date plus whether the series actually reaches the
+/// day the screen needs (see `Ctx::require_kline_date`).
+struct KlineAgg {
+    max_gain_20d: f64,
+    max_gain_250d: f64,
+    prev_day_amount: f64,
+    /// `false` → stale series: show the numbers for this run, never pin them.
+    covers_date: bool,
+}
+
+/// `true` when the series has a bar at/after `require` (dashed `YYYY-MM-DD`).
+/// Empty `require` means "nothing can be required" and counts as covered.
+fn kline_covers(candles: &[KlineCandle], require: &str) -> bool {
+    if require.is_empty() {
+        return true;
+    }
+    candles.last().map(|c| c.date.as_str() >= require).unwrap_or(false)
+}
+
+/// One source top-up of the day series, persisted for the next run. `None`
+/// when the source has nothing usable (offline / empty payload).
+async fn fetch_day_klines(client: &Client, db_path: &Path, code: &str) -> Option<Vec<KlineCandle>> {
+    match source::fetch_kline(client, code, "day", false).await {
+        Ok((name, rows, _)) if !rows.is_empty() => {
+            if let Ok(mut conn) = db::connect(db_path) {
+                if let Err(e) = db::save_klines(&mut conn, code, "day", &name, &rows) {
+                    eprintln!("save strategy kline failed: {e:#}");
+                }
+            }
+            Some(rows)
+        }
+        _ => None,
+    }
+}
+
 async fn kline_stats(
     client: &Client,
     db_path: &Path,
     code: &str,
     date: &str,
+    require_date: &str,
     refresh: bool,
-) -> Option<(f64, f64, f64)> {
+) -> Option<KlineAgg> {
     let mut candles: Vec<KlineCandle> = Vec::new();
     if !refresh {
         if let Ok(conn) = db::connect(db_path) {
@@ -589,21 +734,28 @@ async fn kline_stats(
             }
         }
     }
+    let mut fetched = false;
     if candles.is_empty() {
-        match source::fetch_kline(client, code, "day", false).await {
-            Ok((name, rows, _)) if !rows.is_empty() => {
-                if let Ok(mut conn) = db::connect(db_path) {
-                    if let Err(e) = db::save_klines(&mut conn, code, "day", &name, &rows) {
-                        eprintln!("save strategy kline failed: {e:#}");
-                    }
-                }
-                candles = rows;
-            }
-            _ => return None,
-        }
+        candles = fetch_day_klines(client, db_path, code).await?;
+        fetched = true;
     }
     candles.sort_by(|a, b| a.date.cmp(&b.date));
-    kline_metrics(&candles, date)
+    // A local series ending before the as-of date would pin wrong aggregates,
+    // so top it up from the source once before judging coverage. Skipped when
+    // this call already fetched (avoid a second request for the same code).
+    if !fetched && !kline_covers(&candles, require_date) {
+        if let Some(rows) = fetch_day_klines(client, db_path, code).await {
+            candles = rows;
+            candles.sort_by(|a, b| a.date.cmp(&b.date));
+        }
+    }
+    let (gain20, gain250, prev_amount) = kline_metrics(&candles, date)?;
+    Some(KlineAgg {
+        max_gain_20d: gain20,
+        max_gain_250d: gain250,
+        prev_day_amount: prev_amount,
+        covers_date: kline_covers(&candles, require_date),
+    })
 }
 
 /* ————————————————— entry point ————————————————— */
@@ -617,6 +769,20 @@ pub async fn screen(
     history: HistoryStatus,
     refresh: bool,
 ) -> ScreenResult {
+    let cache_key = screen_cache_key(date, profile, &history, day);
+    if !refresh {
+        if let Ok(cache) = screen_cache().lock() {
+            if let Some(hit) = cache.get(&cache_key) {
+                let mut r = hit.result.clone();
+                r.cached = true;
+                r.computed_at = hit.computed_at;
+                // The history status is a live input (sync progress), not a
+                // result, so keep it current even on a cache hit.
+                r.history = history;
+                return r;
+            }
+        }
+    }
     let mut warnings: Vec<String> = Vec::new();
     // Every pool stock gets a row up front (day order preserved) so the funnel
     // tabs can show all four stages; each step below only updates its own row.
@@ -828,7 +994,8 @@ pub async fn screen(
         warnings.push(format!("{estimated} 只个股成交额由换手率×流通市值估算"));
     }
 
-    ScreenResult {
+    let computed_at = db::now_ts();
+    let result = ScreenResult {
         date: date.to_string(),
         universe: first_board_count,
         hard_passed,
@@ -838,5 +1005,400 @@ pub async fn screen(
         history,
         has_amount: day.stocks.iter().any(|s| s.amount > 0.0),
         stocks,
+        cached: false,
+        computed_at,
+    };
+    if let Ok(mut cache) = screen_cache().lock() {
+        if cache.len() >= SCREEN_CACHE_MAX && !cache.contains_key(&cache_key) {
+            cache.clear();
+        }
+        cache.insert(
+            cache_key,
+            CachedScreen {
+                result: result.clone(),
+                computed_at,
+            },
+        );
+    }
+    result
+}
+
+/* ————————————————— offline cache check ————————————————— */
+
+/// Manual, fully offline check of the two new caches. Ignored by default so the
+/// normal suite stays fast; run it after touching the cache code:
+/// `cargo test --lib -- --ignored screen_cache --nocapture`
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+    use std::future::Future;
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+    use std::task::{Context, Poll, Wake, Waker};
+
+    /// Minimal executor. Every awaited path here is served from local SQLite
+    /// (klines are seeded), so the first poll already returns `Ready`; a stuck
+    /// future means the test accidentally reached the network.
+    fn block_on<F: Future>(f: F) -> F::Output {
+        struct Noop;
+        impl Wake for Noop {
+            fn wake(self: Arc<Self>) {}
+            fn wake_by_ref(self: &Arc<Self>) {}
+        }
+        let waker = Waker::from(Arc::new(Noop));
+        let mut cx = Context::from_waker(&waker);
+        let mut f = std::pin::pin!(f);
+        for _ in 0..1_000_000 {
+            if let Poll::Ready(v) = f.as_mut().poll(&mut cx) {
+                return v;
+            }
+            std::thread::yield_now();
+        }
+        panic!("screen future stayed pending — it tried to do real I/O");
+    }
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new() -> Self {
+            let p = std::env::temp_dir().join(format!(
+                "tianti-cache-test-{}-{}",
+                std::process::id(),
+                chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+            ));
+            std::fs::create_dir_all(&p).expect("create temp dir");
+            Self(p)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn profile() -> StrategyProfile {
+        StrategyProfile {
+            max_price: 1000.0,
+            max_float_cap: 1e12,
+            min_limit_count: 1,
+            limit_window_days: 120,
+            max_streak: 20,
+            max_gain_20d: 1000.0,
+            min_sector_limit_ups: 0,
+            min_sector_continuous: 0,
+            min_seal_ratio: 0.0,
+            max_open_num: 99,
+            latest_first_seal_minute: 240,
+            min_turnover: 0.0,
+            top_n: 5,
+            updated_at: 0,
+        }
+    }
+
+    fn stock() -> Stock {
+        Stock {
+            code: "600001".into(),
+            name: "测试股份".into(),
+            board: 1,
+            days: 1,
+            streak: 1,
+            price: 10.0,
+            change_rate: 10.0,
+            turnover_rate: 5.0,
+            amount: 1e8,
+            seal_amount: 1e7,
+            limit_type: "换手板".into(),
+            float_cap: 1e9,
+            sectors: vec!["测试板块".into()],
+            primary_sector: Some("测试板块".into()),
+            ..Default::default()
+        }
+    }
+
+    fn day(date: &str, stocks: Vec<Stock>) -> DayPayload {
+        DayPayload {
+            date: date.into(),
+            fetched_at: 1_700_000_000,
+            stocks,
+            sectors: vec![Sector {
+                name: "测试板块".into(),
+                limit_up_num: 3,
+                continuous_num: 1,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn history() -> HistoryStatus {
+        HistoryStatus {
+            first_date: "20240102".into(),
+            last_date: "20240102".into(),
+            days: 1,
+            expected_days: 1,
+            syncing: false,
+            updated_at: 0,
+        }
+    }
+
+    /// 40 day bars: 2023-12-01 … 2024-01-09, rising 10.0 → 13.4 through
+    /// 2024-01-04 and a 100.0 spike afterwards. The spike is the look-ahead
+    /// probe: screening 2024-01-04 must ignore it (20.0% vs 769.57%).
+    fn kline_bars() -> Vec<KlineCandle> {
+        let start = chrono::NaiveDate::from_ymd_opt(2023, 12, 1).expect("valid date");
+        (0..40i64)
+            .map(|i| {
+                let date = (start + chrono::Duration::days(i)).format("%Y-%m-%d").to_string();
+                let close = if i <= 34 { 10.0 + i as f64 * 0.1 } else { 100.0 };
+                KlineCandle {
+                    date,
+                    open: close,
+                    high: close,
+                    low: close,
+                    close,
+                    volume: 1e6,
+                    amount: 1e7 + i as f64 * 1e6,
+                    pct: 0.5,
+                    turnover: 1.0,
+                }
+            })
+            .collect()
+    }
+
+    fn seed_db(path: &Path) {
+        db::init(path).expect("init temp db");
+        let mut conn = db::connect(path).expect("connect temp db");
+        // Real trade calendar for the probe dates: `require_kline_date` then
+        // demands the as-of day's own bar instead of leaning on history.
+        db::save_calendar(
+            &mut conn,
+            "20240105",
+            &[
+                "20240102".into(),
+                "20240103".into(),
+                "20240104".into(),
+                "20240105".into(),
+            ],
+            true,
+        )
+        .expect("seed calendar");
+        // The only history row sits on 20240102 and carries another code, so
+        // 600001 keeps a positive history coverage but no streak.
+        db::save_limit_history(
+            &mut conn,
+            "20240102",
+            &[db::LimitHistoryRow {
+                code: "000002".into(),
+                ..Default::default()
+            }],
+        )
+        .expect("seed prev day history");
+        // Local day series, reaching past both screening dates: coverage passes,
+        // so the look-ahead filter is what decides the aggregates.
+        db::save_klines(&mut conn, "600001", "day", "测试股份", &kline_bars()).expect("seed klines");
+    }
+
+    #[test]
+    #[ignore = "offline cache check: run with --lib -- --ignored screen_cache --nocapture"]
+    fn screen_cache_roundtrip() {
+        let tmp = TempDir::new();
+        let path = tmp.0.join("tianti.db");
+        seed_db(&path);
+        let client = Client::new();
+        let prof = profile();
+        let hist = history();
+
+        // P1-A: a past-date replay must not see later bars. Same series, two
+        // as-of dates: 2024-01-04 excludes the 2024-01-05…09 spike.
+        let bars = kline_bars();
+        let (gain20_at, gain250_at, prev_amount) =
+            kline_metrics(&bars, "20240104").expect("metrics at as_of");
+        let (gain20_all, gain250_all, _) =
+            kline_metrics(&bars, "20240109").expect("metrics to series end");
+        eprintln!(
+            "[look-ahead] as_of=20240104 gain20={gain20_at:.2}% gain250={gain250_at:.2}% \
+             prev_amount={prev_amount:.0} | same series read to 20240109 \
+             gain20={gain20_all:.2}% gain250={gain250_all:.2}%"
+        );
+        assert!((gain20_at - 20.0).abs() < 0.001, "filtered gain20 should be 20.0%, got {gain20_at}");
+        assert!((gain250_at - 34.0).abs() < 0.001, "filtered gain250 should be 34.0%, got {gain250_at}");
+        assert!((prev_amount - 4.3e7).abs() < 1.0, "prev amount is the 2024-01-03 bar");
+        assert!(gain20_all > 700.0, "unfiltered look-ahead would be ~769.57%, got {gain20_all}");
+        assert!((gain250_all - 900.0).abs() < 0.001, "unfiltered gain250 would be 900%, got {gain250_all}");
+
+        // P1-B: coverage = the series reaches the last known trade day.
+        assert!(kline_covers(&bars, "2024-01-04"), "series reaches the as-of day");
+        assert!(!kline_covers(&bars, "2024-01-10"), "series stops before 2024-01-10");
+        assert!(kline_covers(&bars, ""), "empty requirement counts as covered");
+
+        // 1) first run: no cache anywhere, computes and fills both caches.
+        let first = block_on(screen(&client, &path, "20240104", &day("20240104", vec![stock()]), &prof, hist.clone(), false));
+        eprintln!(
+            "[cache] #1 date=20240104 refresh=false  cached={} computed_at={}",
+            first.cached, first.computed_at
+        );
+        assert!(!first.cached, "first run must compute");
+        assert!(first.computed_at > 0, "first run must stamp computed_at");
+        assert_eq!(first.hard_passed, 1, "fixture should reach the F4 stage");
+        let day_row = {
+            let conn = db::connect(&path).expect("connect");
+            db::load_stock_stats_day(&conn, "600001", "20240104").expect("load day row")
+        };
+        let day_row = day_row.expect("stock_stats_day row must exist after the first run");
+        assert!(day_row.computed_at > 0);
+        assert!(
+            (day_row.max_gain_20d - 20.0).abs() < 0.001,
+            "pinned gain20 must be the filtered 20.0%, got {}",
+            day_row.max_gain_20d
+        );
+        assert!(
+            (day_row.max_gain_250d - 34.0).abs() < 0.001,
+            "pinned gain250 must be the filtered 34.0%, got {}",
+            day_row.max_gain_250d
+        );
+        let legacy = {
+            let conn = db::connect(&path).expect("connect");
+            db::load_stock_stats(&conn, "600001").expect("load legacy row")
+        };
+        assert!(legacy.map(|r| r.computed_at > 0).unwrap_or(false), "legacy stock_stats write kept");
+
+        // 2) same date + profile + history + day snapshot → cache hit, same stamp.
+        std::thread::sleep(std::time::Duration::from_millis(1_100));
+        let second = block_on(screen(&client, &path, "20240104", &day("20240104", vec![stock()]), &prof, hist.clone(), false));
+        eprintln!(
+            "[cache] #2 date=20240104 refresh=false  cached={} computed_at={}",
+            second.cached, second.computed_at
+        );
+        assert!(second.cached, "second run must hit the in-process cache");
+        assert_eq!(second.computed_at, first.computed_at, "cached stamp must not move");
+
+        // 3) another date → different key → recompute.
+        let other = block_on(screen(&client, &path, "20240105", &day("20240105", vec![stock()]), &prof, hist.clone(), false));
+        eprintln!(
+            "[cache] #3 date=20240105 refresh=false  cached={} computed_at={}",
+            other.cached, other.computed_at
+        );
+        assert!(!other.cached, "another date must recompute");
+
+        // 4) A→B→A: going back to the first date still hits the cache.
+        let back = block_on(screen(&client, &path, "20240104", &day("20240104", vec![stock()]), &prof, hist.clone(), false));
+        eprintln!(
+            "[cache] #4 date=20240104 refresh=false  cached={} computed_at={} (back to A)",
+            back.cached, back.computed_at
+        );
+        assert!(back.cached, "A→B→A must reuse the first date's result");
+        assert_eq!(back.computed_at, first.computed_at);
+
+        // 5) refresh=true bypasses both levels and overwrites. The empty stock
+        // list keeps this branch offline (no F4/kline work) while the cache key
+        // — date|profile|history|fetched_at — stays the same.
+        std::thread::sleep(std::time::Duration::from_millis(1_100));
+        let thin = day("20240104", Vec::new());
+        let forced = block_on(screen(&client, &path, "20240104", &thin, &prof, hist.clone(), true));
+        eprintln!(
+            "[cache] #5 date=20240104 refresh=true   cached={} computed_at={}",
+            forced.cached, forced.computed_at
+        );
+        assert!(!forced.cached, "refresh=true must recompute");
+        assert!(forced.computed_at > first.computed_at, "refresh must stamp a newer time");
+        let after = block_on(screen(&client, &path, "20240104", &thin, &prof, hist.clone(), false));
+        eprintln!(
+            "[cache] #6 date=20240104 refresh=false  cached={} computed_at={} (after refresh)",
+            after.cached, after.computed_at
+        );
+        assert!(after.cached, "refreshed result must replace the cached entry");
+        assert_eq!(after.computed_at, forced.computed_at);
+        assert!(after.stocks.is_empty(), "refresh overwrote the cached payload");
+
+        let day_rows: i64 = {
+            let conn = db::connect(&path).expect("connect");
+            conn.query_row("SELECT COUNT(*) FROM stock_stats_day", [], |r| r.get(0))
+                .expect("count day rows")
+        };
+        eprintln!("[cache] stock_stats_day rows={day_rows} (one per computed date; hits add none)");
+        assert_eq!(day_rows, 2, "20240104 and 20240105 each pinned once, cache hits add no rows");
+
+        // 7) `date >= today` still computes (from the local series) but must
+        // never pin: a half-formed intraday result would otherwise read as a
+        // historical final when the same date is reviewed tomorrow.
+        let today = db::today_ymd();
+        let today_result = block_on(screen(
+            &client,
+            &path,
+            &today,
+            &day(&today, vec![stock()]),
+            &prof,
+            hist.clone(),
+            false,
+        ));
+        eprintln!(
+            "[cache] #7 date={today} today   cached={} hard_passed={}",
+            today_result.cached, today_result.hard_passed
+        );
+        assert!(!today_result.cached, "today is a new screen key");
+        assert_eq!(today_result.hard_passed, 1, "today still computes F4 from the local series");
+        let day_rows_today: i64 = {
+            let conn = db::connect(&path).expect("connect");
+            conn.query_row("SELECT COUNT(*) FROM stock_stats_day", [], |r| r.get(0))
+                .expect("count day rows")
+        };
+        eprintln!("[cache] stock_stats_day rows after today={day_rows_today} (today never pins)");
+        assert_eq!(day_rows_today, 2, "date >= today must not add a stock_stats_day row");
+
+        // 8) the per-day cache must serve a *different* screen cache key without
+        // any kline work: drop the local candles, change the profile, and the
+        // past date still screens from `stock_stats_day` alone (offline proof).
+        {
+            let conn = db::connect(&path).expect("connect");
+            conn.execute("DELETE FROM klines", []).expect("drop klines");
+        }
+        let mut prof2 = profile();
+        prof2.top_n = 3;
+        let from_day_cache = block_on(screen(&client, &path, "20240104", &day("20240104", vec![stock()]), &prof2, hist.clone(), false));
+        eprintln!(
+            "[cache] #8 date=20240104 profile2     cached={} computed_at={} hard_passed={}",
+            from_day_cache.cached, from_day_cache.computed_at, from_day_cache.hard_passed
+        );
+        assert!(!from_day_cache.cached, "profile change is a different screen key");
+        assert_eq!(from_day_cache.hard_passed, 1, "stock_stats_day must serve the aggregates without klines");
+        let day_rows_after: i64 = {
+            let conn = db::connect(&path).expect("connect");
+            conn.query_row("SELECT COUNT(*) FROM stock_stats_day", [], |r| r.get(0))
+                .expect("count day rows")
+        };
+        assert_eq!(day_rows_after, 2, "a day-cache hit writes no new row");
+
+        // 9) `stats_day_v` bump: a v1-marked DB drops its (old-semantics) pins
+        // the next time `db::init` runs.
+        {
+            let conn = db::connect(&path).expect("connect");
+            conn.execute("INSERT OR REPLACE INTO settings(key,value) VALUES ('stats_day_v','1')", [])
+                .expect("downgrade marker");
+            conn.execute(
+                r#"INSERT OR REPLACE INTO stock_stats_day
+                   (code, as_of, max_gain_20d, max_gain_250d, prev_day_amount, computed_at)
+                   VALUES ('600001','20240109',1,1,1,1)"#,
+                [],
+            )
+            .expect("insert v1-era pin");
+        }
+        db::init(&path).expect("re-init migrates");
+        let (stats_day_version, rows_after_migrate): (String, i64) = {
+            let conn = db::connect(&path).expect("connect");
+            (
+                conn.query_row("SELECT value FROM settings WHERE key='stats_day_v'", [], |r| {
+                    r.get(0)
+                })
+                .expect("read stats_day_v"),
+                conn.query_row("SELECT COUNT(*) FROM stock_stats_day", [], |r| r.get(0))
+                    .expect("count day rows"),
+            )
+        };
+        eprintln!(
+            "[cache] #9 stats_day_v={stats_day_version} rows={rows_after_migrate} (v1-era pins cleared)"
+        );
+        assert_eq!(stats_day_version, "2", "migrate must stamp stats_day_v=2");
+        assert_eq!(rows_after_migrate, 0, "v1-era stock_stats_day rows must be cleared");
     }
 }

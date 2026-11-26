@@ -385,6 +385,10 @@ pub struct ScreenResult {
     pub has_amount: bool,
     /// 当日涨停池里每一只票所处阶段；前端按 firstBoard / hardPassed / candidate / rank 过滤。
     pub stocks: Vec<ScreenStock>,
+    /// 是否直接命中进程内筛选结果缓存（同日期 + 同参数 + 同历史覆盖 + 同当日快照）。
+    pub cached: bool,
+    /// 结果生成时间（unix 秒）；命中缓存时为首次计算时间。
+    pub computed_at: i64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]

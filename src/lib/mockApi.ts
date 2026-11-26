@@ -17,10 +17,38 @@ import type {
   ScreenStock,
   SearchItem,
   StrategyProfile,
+  WatchGroup,
+  WatchStock,
 } from "./types";
-import { mockCalendar, mockDay, mockIndices, mockKlines, mockRecent } from "./mock";
+import {
+  buildLhbAgencies,
+  buildLhbBoard,
+  buildLhbDetail,
+  buildLhbInstitutions,
+  buildLhbSeatLog,
+  mockCalendar,
+  mockDay,
+  mockIndices,
+  mockKlines,
+  mockRecent,
+} from "./mock";
+
+/** dev 下可变的 mock 自选分组，让「批量自选」在 pnpm dev 里也看得到变化。 */
+const mockWatchGroups: WatchGroup[] = [
+  {
+    id: 1,
+    name: "我的自选",
+    stocks: [
+      { code: "600519", name: "贵州茅台", market: "1" },
+      { code: "002520", name: "日发精机", market: "0" },
+    ],
+  },
+];
 
 const delay = (ms = 220) => new Promise((r) => setTimeout(r, ms));
+
+/** dev 下模拟 Rust 侧的策略结果缓存，用于验证「过去日期不重复计算」。 */
+const mockScreenCache = new Map<string, { result: ScreenResult; computedAt: number }>();
 
 /* ————————————————— strategy mock (dev only) ————————————————— */
 
@@ -345,6 +373,8 @@ function buildScreen(date: string): ScreenResult {
     ],
     history: { ...historyStatus },
     hasAmount: true,
+    cached: false,
+    computedAt: Math.floor(Date.now() / 1000),
   };
 }
 
@@ -531,11 +561,16 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
     }
     case "recent_stocks":
       return mockRecent as T;
-    case "get_settings":
+    case "get_settings": {
+      // 无头截图可用 ?theme=light / ?theme=dark 覆盖主题，其余情况沿用 localStorage。
+      const queryTheme = new URLSearchParams(location.search).get("theme");
+      const storedTheme = localStorage.getItem("tianti-theme") as "dark" | "light" | null;
+      const theme = queryTheme === "light" || queryTheme === "dark" ? queryTheme : storedTheme || "dark";
       return {
-        theme: (localStorage.getItem("tianti-theme") as "dark" | "light") || "dark",
+        theme,
         uiScale: Number(localStorage.getItem("tianti-ui-scale") || "1.10"),
       } as T;
+    }
     case "set_theme":
       localStorage.setItem("tianti-theme", String(args?.theme));
       return undefined as T;
@@ -545,25 +580,45 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
     case "export_text":
       return `D:\\source\\godStock\\release\\data\\exports\\${String(args?.filename || "export.txt")}` as T;
     case "get_watch_groups":
-      return [
-        {
-          id: 1,
-          name: "我的自选",
-          stocks: [
-            { code: "600519", name: "贵州茅台", market: "1" },
-            { code: "002520", name: "日发精机", market: "0" },
-          ],
-        },
-      ] as T;
-    case "create_watch_group":
-      return 2 as T;
-    case "rename_watch_group":
-    case "delete_watch_group":
-    case "remove_watch_stock":
+      return mockWatchGroups.map((g) => ({ ...g, stocks: g.stocks.map((s) => ({ ...s })) })) as T;
+    case "create_watch_group": {
+      const id = mockWatchGroups.reduce((max, g) => Math.max(max, g.id), 0) + 1;
+      mockWatchGroups.push({ id, name: String(args?.name ?? `分组 ${id}`), stocks: [] });
+      return id as T;
+    }
+    case "rename_watch_group": {
+      const group = mockWatchGroups.find((g) => g.id === Number(args?.id));
+      if (group) group.name = String(args?.name ?? group.name);
+      return undefined as T;
+    }
+    case "delete_watch_group": {
+      const index = mockWatchGroups.findIndex((g) => g.id === Number(args?.id));
+      if (index >= 0) mockWatchGroups.splice(index, 1);
+      return undefined as T;
+    }
+    case "remove_watch_stock": {
+      const group = mockWatchGroups.find((g) => g.id === Number(args?.groupId));
+      if (group) group.stocks = group.stocks.filter((s) => s.code !== String(args?.code));
+      return undefined as T;
+    }
     case "save_chart_prefs":
       return undefined as T;
-    case "add_watch_stocks":
-      return { added: 1, skipped: 0 } as T;
+    case "add_watch_stocks": {
+      const group = mockWatchGroups.find((g) => g.id === Number(args?.groupId));
+      const list = (Array.isArray(args?.stocks) ? args.stocks : []) as WatchStock[];
+      if (!group) return { added: 0, skipped: list.length } as T;
+      let added = 0;
+      let skipped = 0;
+      for (const stock of list) {
+        if (!stock?.code || group.stocks.some((s) => s.code === stock.code)) {
+          skipped += 1;
+          continue;
+        }
+        group.stocks.push({ code: stock.code, name: stock.name, market: stock.market });
+        added += 1;
+      }
+      return { added, skipped } as T;
+    }
     case "get_chart_prefs":
       return {
         maEnabled: false,
@@ -620,11 +675,31 @@ export async function mockInvoke<T>(cmd: string, args?: Record<string, unknown>)
       }
       return { ...strategyProfile } as T;
     }
-    case "run_first_to_second":
-      return buildScreen(normalizeDate(args?.date)) as T;
+    case "run_first_to_second": {
+      const date = normalizeDate(args?.date);
+      const refresh = args?.refresh === true;
+      const key = `${date}|${JSON.stringify(strategyProfile)}|${historyStatus.lastDate}|${historyStatus.days}`;
+      const hit = refresh ? undefined : mockScreenCache.get(key);
+      if (hit) return { ...hit.result, cached: true, computedAt: hit.computedAt } as T;
+      const result = buildScreen(date);
+      const computedAt = Math.floor(Date.now() / 1000);
+      mockScreenCache.set(key, { result, computedAt });
+      if (mockScreenCache.size > 12) mockScreenCache.delete(mockScreenCache.keys().next().value as string);
+      return { ...result, cached: false, computedAt } as T;
+    }
     case "capture_auction":
     case "get_auction":
       return buildAuction(normalizeDate(args?.date)) as T;
+    case "get_lhb_board":
+      return buildLhbBoard(normalizeDate(args?.date)) as T;
+    case "get_lhb_detail":
+      return buildLhbDetail(String(args?.code ?? ""), normalizeDate(args?.date)) as T;
+    case "get_lhb_agencies":
+      return buildLhbAgencies(normalizeDate(args?.date)) as T;
+    case "get_lhb_institutions":
+      return buildLhbInstitutions(normalizeDate(args?.date)) as T;
+    case "get_lhb_seat_log":
+      return buildLhbSeatLog(String(args?.seatId ?? ""), Number(args?.days ?? 30)) as T;
     case "window_control":
     case "open_data_dir":
       return undefined as T;

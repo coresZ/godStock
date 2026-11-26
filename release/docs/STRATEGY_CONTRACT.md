@@ -11,7 +11,7 @@
 | `sync_limit_history` | `{ days: number, refresh: boolean }` | `HistoryStatus` | 回填/增量；同步中触发 `history:progress` |
 | `get_strategy_profile` | — | `StrategyProfile` | 单行配置 |
 | `save_strategy_profile` | `{ profile: StrategyProfile }` | `StrategyProfile` | 校验并落库 |
-| `run_first_to_second` | `{ date: string, refresh?: boolean }` | `ScreenResult` | 只读筛选，不写当日快照；`refresh=true` 强制重算日K统计 |
+| `run_first_to_second` | `{ date: string, refresh?: boolean }` | `ScreenResult` | 只读筛选，不写当日快照；默认命中两级缓存，`refresh=true` 绕过缓存强制重算并覆盖 |
 | `capture_auction` | `{ date: string }` | `AuctionResult` | 09:25–09:30 采样；非窗口也允许但 `inWindow=false` |
 | `get_auction` | `{ date: string }` | `AuctionResult` | 读已存快照；没有则 `captured=false` |
 
@@ -54,6 +54,17 @@ CREATE TABLE IF NOT EXISTS stock_stats (
   last_limit_date TEXT NOT NULL DEFAULT '',
   computed_at INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS stock_stats_day (
+  code TEXT NOT NULL,
+  as_of TEXT NOT NULL,
+  max_gain_20d REAL NOT NULL DEFAULT 0,
+  max_gain_250d REAL NOT NULL DEFAULT 0,
+  prev_day_amount REAL NOT NULL DEFAULT 0,
+  computed_at INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (code, as_of)
+);
+CREATE INDEX IF NOT EXISTS idx_stock_stats_day_asof ON stock_stats_day(as_of);
 
 CREATE TABLE IF NOT EXISTS auction_snapshot (
   date TEXT NOT NULL,
@@ -132,11 +143,31 @@ strategyShowExcluded: boolean;
 | `data-strategy-show-excluded` | 展开/收起被剔除 |
 | `data-candidate-code` + `data-candidate-name` | 打开 K 线 |
 | `data-candidate-detail` | 打开规则详情抽屉 |
-| `data-candidate-watch` | 加入自选 |
+| `data-candidate-watch` | 单只加入自选 |
+| `data-screen-watch="watch\|candidates\|firstBoard\|hardPassed"` | 把该阶段当前列表批量加入自选 |
 | `data-auction-capture` | 采集竞价 |
 | `data-strategy-export` | 导出候选 TXT |
 
-## 6. 视觉约束
+
+## 6. 缓存与失效
+
+`ScreenResult` 额外字段：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `cached` | boolean | 本次结果直接命中「同日期 + 同参数 + 同历史覆盖 + 同当日快照」的进程内缓存 |
+| `computedAt` | number | 结果生成时间（unix 秒），命中缓存时保持不变 |
+
+两级缓存：
+
+1. **逐日 K 线聚合**（持久化，`stock_stats_day`，主键 `(code, as_of)`）：只存与参数无关的 `max_gain_20d / max_gain_250d / prev_day_amount`。过去日期第二次筛选不再读本地 K 线、也不再联网补 K 线；`refresh=true` 绕过并覆盖当前日期。`settings.stats_day_v` 版本变化时整表清空；`clear_cache` 会一起清。
+2. **整份筛选结果**（进程内，最多 24 条）：key = `date | profile JSON | history.days | history.last_date | day.fetched_at`。切日期 A→B→A、切页签、`ensureStrategy` 复用都直接命中；参数保存（`updated_at` 变化）、历史回填完成、当日快照重新抓取（`fetched_at` 变化）会自动换 key；`refresh=true`（页签行「刷新」按钮）绕过并覆盖；`clear_cache` 命令会同时清空内存缓存。
+
+过去日期的逐日缓存未命中时，每只硬候选最多联网补拉一次当日 K 线用于建立 pin；**今日不写 `stock_stats_day`**（当天盘中可能是半成品，次日回看会被当成历史定稿），今日的重复筛选只靠整份结果缓存。打开 K 线图表时若缓存落后于最近收盘日，也会补拉一次。
+
+休市（非交易时段 / 周末 / 节假日）优先本地缓存：`shouldRefreshLive()` 在交易时段为 true；**收盘后 15:05 起只补拉一次**（当天快照 `fetchedAt` 早于 15:05 才补，15:05 之后或周末/节假日一律只读缓存，失败会按 60 秒节流重试直到成功或跨日）；过去日期不再自动补拉。指数与 K 线的后台刷新只在交易时段发生，但休市启动时若缓存落后于最近收盘日，会各补一次收盘数据；启动时仍会刷新交易日历、取一次自选报价。用户手动「刷新/重试」不受此限制。
+
+## 7. 视觉约束
 
 - 只用 `src/styles.css` 语义 token（`--bg/--surface/--line/--brass-*/--text/--mono/--serif`），双主题都成立。
 - 复用 `.view`、`.chip`、`.seg`、`.pool-table` 的节奏；不新增高饱和色、不用大阴影。

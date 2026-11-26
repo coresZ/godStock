@@ -249,6 +249,19 @@ pub fn init(path: &Path) -> Result<()> {
             computed_at INTEGER NOT NULL DEFAULT 0
         );
 
+        -- Per trade day kline aggregates: keeps a past date's screening from
+        -- re-fetching candles. Derived cache only, never the day snapshot.
+        CREATE TABLE IF NOT EXISTS stock_stats_day (
+            code TEXT NOT NULL,
+            as_of TEXT NOT NULL,
+            max_gain_20d REAL NOT NULL DEFAULT 0,
+            max_gain_250d REAL NOT NULL DEFAULT 0,
+            prev_day_amount REAL NOT NULL DEFAULT 0,
+            computed_at INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (code, as_of)
+        );
+        CREATE INDEX IF NOT EXISTS idx_stock_stats_day_asof ON stock_stats_day(as_of);
+
         CREATE TABLE IF NOT EXISTS auction_snapshot (
             date TEXT NOT NULL,
             code TEXT NOT NULL,
@@ -318,6 +331,20 @@ fn migrate(conn: &Connection) -> Result<()> {
         conn.execute(
             "INSERT INTO settings(key,value) VALUES ('index_series_v','3')
              ON CONFLICT(key) DO UPDATE SET value='3'",
+            [],
+        )?;
+    }
+    // `stock_stats_day` is a pure derived cache (kline aggregates per trade day);
+    // bump `stats_day_v` whenever the aggregate definition changes. v2 drops the
+    // rows written by the look-ahead / uncovered-series era in one go.
+    let stats_day_version: Option<String> = conn
+        .query_row("SELECT value FROM settings WHERE key='stats_day_v'", [], |r| r.get(0))
+        .optional()?;
+    if stats_day_version.as_deref() != Some("2") {
+        conn.execute("DELETE FROM stock_stats_day", [])?;
+        conn.execute(
+            "INSERT INTO settings(key,value) VALUES ('stats_day_v','2')
+             ON CONFLICT(key) DO UPDATE SET value='2'",
             [],
         )?;
     }
@@ -1221,6 +1248,7 @@ pub fn clear_cache(conn: &mut Connection) -> Result<()> {
         "kline_meta",
         "intraday_bars",
         "index_daily",
+        "stock_stats_day",
     ] {
         tx.execute(&format!("DELETE FROM {}", table), [])?;
     }
@@ -1513,6 +1541,10 @@ pub fn save_stock_stats(conn: &Connection, row: &StockStatsRow) -> Result<()> {
     Ok(())
 }
 
+/// Read side of the legacy `stock_stats` table. `ensure_stats` now keys its
+/// kline reuse on `stock_stats_day`; this stays as the table's accessor (tests
+/// and any future consumer) and must keep its "latest row per code" semantics.
+#[allow(dead_code)]
 pub fn load_stock_stats(conn: &Connection, code: &str) -> Result<Option<StockStatsRow>> {
     Ok(conn
         .query_row(
@@ -1547,6 +1579,63 @@ pub fn prev_day_amounts(conn: &Connection) -> Result<HashMap<String, f64>> {
         out.insert(code, amount);
     }
     Ok(out)
+}
+
+/* ————————————————— stock_stats_day (per trade day kline aggregates) ————————————————— */
+
+/// Kline aggregates pinned to one trade day. `stock_stats` keeps the "latest"
+/// value per code (the auction tab reads it), while this table lets a past
+/// date replay its screening without recomputing or re-fetching candles.
+#[derive(Debug, Clone, Default)]
+pub struct StockStatsDayRow {
+    pub code: String,
+    pub as_of: String,
+    pub max_gain_20d: f64,
+    pub max_gain_250d: f64,
+    pub prev_day_amount: f64,
+    pub computed_at: i64,
+}
+
+pub fn save_stock_stats_day(conn: &Connection, row: &StockStatsDayRow) -> Result<()> {
+    conn.execute(
+        r#"INSERT INTO stock_stats_day
+           (code, as_of, max_gain_20d, max_gain_250d, prev_day_amount, computed_at)
+           VALUES (?1,?2,?3,?4,?5,?6)
+           ON CONFLICT(code,as_of) DO UPDATE SET
+             max_gain_20d=excluded.max_gain_20d,
+             max_gain_250d=excluded.max_gain_250d,
+             prev_day_amount=excluded.prev_day_amount,
+             computed_at=excluded.computed_at"#,
+        params![
+            row.code,
+            row.as_of,
+            row.max_gain_20d,
+            row.max_gain_250d,
+            row.prev_day_amount,
+            row.computed_at,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn load_stock_stats_day(conn: &Connection, code: &str, as_of: &str) -> Result<Option<StockStatsDayRow>> {
+    Ok(conn
+        .query_row(
+            r#"SELECT code, as_of, max_gain_20d, max_gain_250d, prev_day_amount, computed_at
+               FROM stock_stats_day WHERE code=?1 AND as_of=?2"#,
+            params![code, as_of],
+            |r| {
+                Ok(StockStatsDayRow {
+                    code: r.get(0)?,
+                    as_of: r.get(1)?,
+                    max_gain_20d: r.get(2)?,
+                    max_gain_250d: r.get(3)?,
+                    prev_day_amount: r.get(4)?,
+                    computed_at: r.get(5)?,
+                })
+            },
+        )
+        .optional()?)
 }
 
 /* ————————————————— auction_snapshot ————————————————— */

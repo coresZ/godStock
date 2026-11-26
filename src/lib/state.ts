@@ -8,6 +8,13 @@ import type {
   HistoryStatus,
   IndexQuote,
   KlinePayload,
+  LhbAgencies,
+  LhbBoard,
+  LhbDetail,
+  LhbInstitutions,
+  LhbSeatLog,
+  LhbSortKey,
+  OtherTab,
   Period,
   PoolKind,
   ScreenResult,
@@ -88,6 +95,27 @@ export interface AppState {
   strategyDetailCode: string | null;
   strategyShowExcluded: boolean;
   strategyStage: StrategyStage;
+  /* ——— 其他 · 游资动态 ——— */
+  otherTab: OtherTab;
+  lhbDate: string;
+  lhbBoard: LhbBoard | null;
+  lhbAgencies: LhbAgencies | null;
+  lhbInstitutions: LhbInstitutions | null;
+  lhbDetail: LhbDetail | null;
+  /** 缓存的明细归属，`date|code` */
+  lhbDetailKey: string;
+  lhbSeatLog: LhbSeatLog | null;
+  lhbSeatName: string;
+  lhbStock: string;
+  lhbTag: string;
+  lhbAgencyId: string;
+  lhbSort: { key: LhbSortKey; dir: 1 | -1 };
+  lhbLoading: boolean;
+  lhbSecondaryLoading: boolean;
+  lhbExtraError: string | null;
+  lhbDetailLoading: boolean;
+  lhbSeatLoading: boolean;
+  lhbError: string | null;
 }
 
 const DEFAULT_CHART_RANGES: Record<Period, number> = {
@@ -218,6 +246,25 @@ export const state: AppState = {
   strategyDetailCode: null,
   strategyShowExcluded: false,
   strategyStage: "watch",
+  otherTab: "board",
+  lhbDate: "",
+  lhbBoard: null,
+  lhbAgencies: null,
+  lhbInstitutions: null,
+  lhbDetail: null,
+  lhbDetailKey: "",
+  lhbSeatLog: null,
+  lhbSeatName: "",
+  lhbStock: "",
+  lhbTag: "",
+  lhbAgencyId: "",
+  lhbSort: { key: "net", dir: -1 },
+  lhbLoading: false,
+  lhbSecondaryLoading: false,
+  lhbExtraError: null,
+  lhbDetailLoading: false,
+  lhbSeatLoading: false,
+  lhbError: null,
 };
 
 export function parseHash(): { view: ViewName; code: string } {
@@ -226,6 +273,7 @@ export function parseHash(): { view: ViewName; code: string } {
   if (view === "pool") return { view: "pool", code: "" };
   if (view === "timeline") return { view: "timeline", code: "" };
   if (view === "strategy") return { view: "strategy", code: "" };
+  if (view === "other") return { view: "other", code: "" };
   if (view === "chart" && code) return { view: "chart", code };
   return { view: "ladder", code: "" };
 }

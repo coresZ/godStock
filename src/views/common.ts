@@ -40,6 +40,7 @@ export function renderRail(): string {
     { view: "timeline", label: "时间轴", iconName: "activity", title: "涨跌停时间轴" },
     { view: "chart", label: "K线", iconName: "chart", title: "个股K线" },
     { view: "strategy", label: "策略", iconName: "layers", title: "策略复盘" },
+    { view: "other", label: "其他", iconName: "grid", title: "其他 · 游资动态" },
   ];
   return `
   <aside class="rail">
@@ -57,7 +58,7 @@ export function renderRail(): string {
         ${icon(state.theme === "dark" ? "sun" : "moon", 18)}
       </button>
       <button class="rail-tool" data-action="settings" title="设置" aria-label="设置">${icon("settings", 18)}</button>
-      <span class="rail-version">v1.4.1</span>
+      <span class="rail-version">v1.5.0</span>
     </div>
   </aside>`;
 }

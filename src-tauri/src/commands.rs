@@ -6,6 +6,7 @@ use reqwest::Client;
 use tauri::{Emitter, State};
 
 use crate::db;
+use crate::lhb;
 use crate::models::*;
 use crate::source;
 
@@ -691,6 +692,8 @@ pub async fn get_data_info(state: State<'_, AppState>) -> Result<DataInfo, Strin
 pub async fn clear_cache(state: State<'_, AppState>) -> Result<(), String> {
     let mut conn = state_conn(&state)?;
     db::clear_cache(&mut conn).map_err(|e| err(e))?;
+    // 策略结果缓存活在进程内存里，清缓存时一并丢弃，避免旧结果继续命中。
+    crate::strategy::clear_screen_cache();
     Ok(())
 }
 
@@ -1277,4 +1280,62 @@ pub async fn get_auction(state: State<'_, AppState>, date: String) -> Result<Auc
         rows,
         warnings: Vec::new(),
     })
+}
+
+/* ——— 其他 · 游资动态（龙虎榜） ——— */
+
+#[tauri::command]
+pub async fn get_lhb_board(
+    state: State<'_, AppState>,
+    date: String,
+    refresh: Option<bool>,
+) -> Result<lhb::LhbBoard, String> {
+    lhb::board(&state.client, &date, refresh.unwrap_or(false))
+        .await
+        .map_err(|e| err(e))
+}
+
+#[tauri::command]
+pub async fn get_lhb_detail(
+    state: State<'_, AppState>,
+    code: String,
+    date: String,
+    refresh: Option<bool>,
+) -> Result<lhb::LhbDetail, String> {
+    lhb::detail(&state.client, &code, &date, refresh.unwrap_or(false))
+        .await
+        .map_err(|e| err(e))
+}
+
+#[tauri::command]
+pub async fn get_lhb_agencies(
+    state: State<'_, AppState>,
+    date: String,
+    refresh: Option<bool>,
+) -> Result<lhb::LhbAgencies, String> {
+    lhb::agencies(&state.client, &date, refresh.unwrap_or(false))
+        .await
+        .map_err(|e| err(e))
+}
+
+#[tauri::command]
+pub async fn get_lhb_institutions(
+    state: State<'_, AppState>,
+    date: String,
+    refresh: Option<bool>,
+) -> Result<lhb::LhbInstitutions, String> {
+    lhb::institutions(&state.client, &date, refresh.unwrap_or(false))
+        .await
+        .map_err(|e| err(e))
+}
+
+#[tauri::command]
+pub async fn get_lhb_seat_log(
+    state: State<'_, AppState>,
+    seat_id: String,
+    days: Option<i64>,
+) -> Result<lhb::LhbSeatLog, String> {
+    lhb::seat_log(&state.client, &seat_id, days.unwrap_or(30))
+        .await
+        .map_err(|e| err(e))
 }

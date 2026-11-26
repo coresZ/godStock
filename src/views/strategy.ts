@@ -211,6 +211,7 @@ function renderTabs(tab: StrategyTab, history: HistoryStatus | null): string {
     ? `${history.syncing ? "回填中" : "历史覆盖"} ${history.days}/${history.expectedDays || 250} 天`
     : "历史未回填";
   const updated = history && history.updatedAt ? relTime(history.updatedAt) : "";
+  const screen = view().screen;
   return `<div class="strategy-tabs-row">
     <div class="seg strategy-tabs" role="tablist" aria-label="策略页签">
       ${TABS.map(
@@ -222,6 +223,7 @@ function renderTabs(tab: StrategyTab, history: HistoryStatus | null): string {
       ${history && !historyReady(history) && !history.syncing ? `<button class="strategy-meta-sync" data-history-sync title="补齐到 250 个交易日">补全历史</button>` : ""}
       ${history?.lastDate ? `<span class="strategy-meta-date">${esc(fmtDotDate(history.lastDate))}</span>` : ""}
       ${updated ? `<span class="strategy-meta-rel">${esc(updated)}</span>` : ""}
+      ${screen ? `<span class="strategy-cache-chip" title="结果生成于 ${new Date(screen.computedAt * 1000).toLocaleString("zh-CN")} · ${screen.cached ? "缓存命中" : "本次计算"}">${screen.cached ? "缓存" : "已计算"} · ${relTime(screen.computedAt)}</span>` : ""}
     </div>
     <button class="strategy-icon-btn" data-strategy-refresh title="清缓存并重新筛选" aria-label="重新筛选">${icon("refresh", 13)}</button>
   </div>`;
@@ -375,6 +377,7 @@ function renderCandidateBlock(screen: ScreenResult, v: StrategyView, stage: "can
   const head = `<div class="strategy-list-head">
     <h3 class="strategy-list-title">${title}</h3>
     <span class="strategy-list-sub">${stage === "watch" ? "按规则分降序" : "全部规则通过 · 按规则分降序"}${truncated ? ` · 仅显示前 ${rows.length} 只` : ""}</span>
+    <button class="chip strategy-watch-batch" data-screen-watch="${stage}" ${rows.length ? "" : "disabled"} title="把当前${title}的 ${rows.length} 只加入自选">${icon("wallet", 12)}<span>批量自选</span><span class="count">${rows.length}</span></button>
     <button class="chip ${excludedOn ? "active" : ""}" data-strategy-show-excluded aria-pressed="${excludedOn}">
       ${icon(excludedOn ? "eyeOff" : "eye", 12)}<span>${excludedOn ? "隐藏被剔除" : "显示被剔除"}</span><span class="count">${screen.excluded.length}</span>
     </button>
@@ -410,6 +413,7 @@ function renderStageStocks(screen: ScreenResult, stage: "firstBoard" | "hardPass
     <div class="strategy-list-head">
       <h3 class="strategy-list-title">${title}</h3>
       <span class="strategy-list-sub">${sub}</span>
+      <button class="chip strategy-watch-batch" data-screen-watch="${stage}" ${rows.length ? "" : "disabled"} title="把当前${title}的 ${rows.length} 只加入自选">${icon("wallet", 12)}<span>批量自选</span><span class="count">${rows.length}</span></button>
       <span class="strategy-stage-count">${rows.length} 只</span>
     </div>
     ${rows.length ? renderStageTable(rows) : renderStageEmpty(stage)}

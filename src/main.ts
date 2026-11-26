@@ -2,13 +2,14 @@ import "./styles.css";
 import { api } from "./lib/api";
 import { closeDropdown, initDropdowns } from "./lib/dropdown";
 import { availableDates, filterStocks, findStock, neighbors, parseHash, state } from "./lib/state";
-import type { ChartPrefs, ChartSelection, KlineCandle, Period, SearchItem, StrategyProfile, StrategyStage, StrategyTab, Theme, ViewName, WatchStock } from "./lib/types";
+import type { ChartPrefs, ChartSelection, KlineCandle, OtherTab, Period, SearchItem, StrategyProfile, StrategyStage, StrategyTab, Theme, ViewName, WatchStock } from "./lib/types";
 import { esc, fmtBytes, fmtClock, fmtMoney, fmtPct, fmtPrice, fmtShortDate, icon, pctToneClass, relTime, tierName, weekdayFromYmd } from "./lib/ui";
 import { KLineChart } from "./chart";
 import { TimeShareChart } from "./timeshare";
 import { chartSwitchContext, indicatorSummary, normalizeChartRange, renderChartDock, renderChartHead, renderChartToolbar, renderChartView, updateChartDock } from "./views/chart";
 import { renderIndices, renderRail, renderTitlebar, syncLabel } from "./views/common";
 import { renderLadder } from "./views/ladder";
+import { renderOther, sortedLhbBoard, updateOtherStage } from "./views/other";
 import { renderPool, updatePoolStage, updatePoolTable } from "./views/pool";
 import { renderStrategy, renderStrategyStage, updateStrategyStage } from "./views/strategy";
 import { renderTimeline, timelineExportText } from "./views/timeline";
@@ -26,6 +27,10 @@ let timeshareRefreshing = false;
 let lastDayAutoRefresh = 0;
 let lastChartAutoRefresh = 0;
 let strategyEnsuring = false;
+let lhbEnsuring = false;
+/** 首次加载还在进行时又切了日期：完成后补拉当前日期，避免丢请求。 */
+let lhbPending = false;
+let lhbSeatToken = 0;
 let historyUnlisten: (() => void) | null = null;
 
 type HistoryProgress = { done: number; total: number; current: string };
@@ -150,12 +155,15 @@ async function start(): Promise<void> {
   booted = true;
   window.setTimeout(notifyReady, 60);
 
-  void loadIndices(true);
+  void loadIndices(marketSessionOpen());
   window.setInterval(() => {
     if (document.hidden) return;
-    void loadIndices(true);
-    if (state.view === "chart" && state.chartStock) void loadChartQuote(chartToken);
-    void refreshWatchQuotes();
+    // 休市期间只读缓存：指数 / 报价 / 自选报价都不再打网络。
+    if (marketSessionOpen()) {
+      void loadIndices(true);
+      if (state.view === "chart" && state.chartStock) void loadChartQuote(chartToken);
+      void refreshWatchQuotes();
+    }
     autoRefreshTick();
     maybeAutoCaptureAuction();
   }, 20000);
@@ -165,6 +173,7 @@ async function start(): Promise<void> {
     await loadChart();
   }
   if (state.view === "strategy") void ensureStrategy(true);
+  if (state.view === "other") void ensureOther(true);
   window.setTimeout(() => {
     document.querySelector(".ladder")?.classList.remove("is-entering");
   }, 2000);
@@ -256,6 +265,8 @@ async function ensureCalendar(): Promise<void> {
     state.calendar = cal;
     if (!state.date) state.date = cal.initialDate || cal.dates[cal.dates.length - 1] || cal.today;
     renderMain();
+    // 首屏的指数加载发生在拿到日历之前，无法判断「缓存是否落后」；日历就绪后再校一次。
+    void loadIndices(false);
     if (cal.source !== "network") void refreshCalendar();
   } catch (e) {
     state.date = state.date || localToday();
@@ -311,7 +322,8 @@ async function loadDay(date: string, initial = false): Promise<void> {
     state.lastSyncAt = day.fetchedAt;
     renderMain();
     updateChrome();
-    if (day.source !== "network") void refreshDay(date, token, true);
+    // 休市 / 过去日期只读缓存：数据已定稿，不再后台补刷网络。
+    if (day.source !== "network" && shouldRefreshLive()) void refreshDay(date, token, true);
   } catch (e) {
     if (token !== dayToken) return;
     state.dayLoading = false;
@@ -366,19 +378,23 @@ async function refreshDay(date: string, token: number, quiet = false): Promise<v
 async function loadIndices(refreshing: boolean): Promise<void> {
   if (indicesLoading) return;
   indicesLoading = true;
+  let wantRefresh = false;
   try {
     const list = await api.getIndices(refreshing);
     if (list.length) {
       state.indices = list;
       updateIndicesDom();
-      if (!refreshing) void loadIndices(true);
+      // 盘中照常刷新；休市启动时若缓存还停在上一次收盘，再补一次当天收盘。
+      if (!refreshing && (marketSessionOpen() || indicesBehindSettled())) wantRefresh = true;
       return;
     }
     if (!refreshing) showIndicesUnavailable();
   } catch {
     if (!refreshing) showIndicesUnavailable();
   } finally {
+    // 先释放 loading 标记，再补一次网络刷新（否则递归调用会被守卫吞掉）。
     indicesLoading = false;
+    if (wantRefresh) void loadIndices(true);
   }
 }
 
@@ -403,6 +419,7 @@ function changeDate(date: string | null | undefined): void {
   closeOverlay();
   const task = loadDay(date);
   if (state.view === "strategy") void task.then(() => ensureStrategy(true));
+  if (state.view === "other") void task.then(() => ensureOther(true));
 }
 
 /* ————————————————— routing ————————————————— */
@@ -428,6 +445,7 @@ function navigate(view: ViewName): void {
   renderMain();
   updateChrome();
   if (view === "strategy") void ensureStrategy();
+  if (view === "other") void ensureOther();
 }
 
 /* ————————————————— strategy ————————————————— */
@@ -522,6 +540,239 @@ function maybeAutoCaptureAuction(): void {
   const now = new Date(Date.now() + 8 * 3600 * 1000);
   const clock = now.getUTCHours() * 60 + now.getUTCMinutes();
   if (clock >= 9 * 60 + 25 && clock <= 9 * 60 + 30) void captureStrategyAuction();
+}
+
+/* ————————————————— other · 游资动态 ————————————————— */
+
+function onOtherView(): boolean {
+  return state.view === "other";
+}
+
+/** 是否由左侧个股列表驱动的右侧明细（总榜 / 机构）。 */
+function needsStockPanel(): boolean {
+  return state.otherTab === "board" || state.otherTab === "org";
+}
+
+/** 让当前选中项落在本次加载的数据里；换日后旧选中项失效时回落到第一行。 */
+function syncLhbSelection(): void {
+  const board = state.lhbBoard;
+  const agencies = state.lhbAgencies;
+  const institutions = state.lhbInstitutions;
+  if (needsStockPanel()) {
+    const rows = state.otherTab === "org" ? institutions?.rows : sortedLhbBoard();
+    if (!rows?.some((row) => row.code === state.lhbStock)) state.lhbStock = rows?.[0]?.code ?? "";
+    return;
+  }
+  if (state.otherTab === "yyz") {
+    if (!agencies?.hot.some((row) => row.tag === state.lhbTag)) state.lhbTag = agencies?.hot[0]?.tag ?? "";
+    return;
+  }
+  if (!agencies?.rows.some((row) => row.id === state.lhbAgencyId)) state.lhbAgencyId = agencies?.rows[0]?.id ?? "";
+}
+
+/** 进入「其他」页 / 换日后拉取龙虎榜；force 时清空并重新请求。 */
+async function ensureOther(force = false): Promise<void> {
+  if (!onOtherView() || !state.date) return;
+  if (lhbEnsuring) {
+    // 已有一轮在跑：记下来，等它结束后按最新日期补一次。
+    lhbPending = true;
+    return;
+  }
+  if (!force && state.lhbBoard && state.lhbBoard.requestedDate === state.date) {
+    syncLhbSelection();
+    updateOtherStage();
+    // 首屏只成功了一半（席位榜 / 机构榜失败）时，回到页面再补一次。
+    if (!state.lhbAgencies || !state.lhbInstitutions) void loadLhbSecondary();
+    return;
+  }
+  const targetDate = state.date;
+  lhbEnsuring = true;
+  state.lhbLoading = true;
+  state.lhbError = null;
+  state.lhbExtraError = null;
+  if (force) {
+    state.lhbBoard = null;
+    state.lhbAgencies = null;
+    state.lhbInstitutions = null;
+    state.lhbDetail = null;
+    state.lhbDetailKey = "";
+    state.lhbSeatLog = null;
+  }
+  updateOtherStage();
+  try {
+    const board = await api.getLhbBoard(targetDate, force);
+    if (!onOtherView()) return;
+    if (state.date !== targetDate) {
+      // 响应回来时日期已经变了：丢弃这份数据，交给 finally 补拉。
+      lhbPending = true;
+      return;
+    }
+    state.lhbBoard = board;
+    state.lhbDate = board.date;
+    // 默认选中「列表第一行」（按当前排序），避免右栏与左列对不上。
+    if (!board.rows.some((row) => row.code === state.lhbStock)) state.lhbStock = sortedLhbBoard()[0]?.code ?? "";
+    updateOtherStage();
+    if (!board.rows.length) {
+      state.lhbAgencies = null;
+      state.lhbInstitutions = null;
+      state.lhbDetail = null;
+      state.lhbDetailKey = "";
+      return;
+    }
+    await loadLhbSecondary(force);
+  } catch (e) {
+    if (!onOtherView()) return;
+    state.lhbError = messageFrom(e, "龙虎榜数据加载失败");
+    toast(state.lhbError, "error");
+  } finally {
+    lhbEnsuring = false;
+    state.lhbLoading = false;
+    if (onOtherView()) updateOtherStage();
+    if (lhbPending) {
+      lhbPending = false;
+      if (onOtherView() && state.date !== targetDate) void ensureOther(true);
+    }
+  }
+}
+
+/** 席位榜 + 机构榜。两者互不阻塞：任一失败只记一条可重试的提示，不影响主榜与明细。 */
+async function loadLhbSecondary(force = false): Promise<void> {
+  const board = state.lhbBoard;
+  if (!board || !board.rows.length || state.lhbSecondaryLoading) return;
+  if (!force && state.lhbAgencies && state.lhbInstitutions) return;
+  state.lhbSecondaryLoading = true;
+  state.lhbExtraError = null;
+  updateOtherStage();
+  try {
+    const [agencies, institutions] = await Promise.allSettled([
+      api.getLhbAgencies(board.date, force),
+      api.getLhbInstitutions(board.date, force),
+    ]);
+    // 期间换了日期或主榜：这份次要数据已经过期，直接丢弃。
+    if (!onOtherView() || state.lhbBoard !== board) return;
+    const failed: string[] = [];
+    if (agencies.status === "fulfilled") state.lhbAgencies = agencies.value;
+    else failed.push("席位榜");
+    if (institutions.status === "fulfilled") state.lhbInstitutions = institutions.value;
+    else failed.push("机构榜");
+    state.lhbExtraError = failed.length ? `${failed.join(" / ")}读取失败，可点重试` : null;
+    syncLhbSelection();
+    updateOtherStage();
+    if (needsStockPanel() && state.lhbStock) await loadLhbDetail(state.lhbStock);
+  } finally {
+    state.lhbSecondaryLoading = false;
+    if (onOtherView()) updateOtherStage();
+  }
+}
+
+/** 读取单只票的买卖席位明细，key 命中缓存则不重复请求。 */
+async function loadLhbDetail(code: string): Promise<void> {
+  if (!code || !state.lhbDate) return;
+  const date = state.lhbDate;
+  const key = `${date}|${code}`;
+  if (state.lhbDetailKey === key && state.lhbDetail) return;
+  state.lhbDetailLoading = true;
+  updateOtherStage();
+  try {
+    const detail = await api.getLhbDetail(code, date);
+    if (!onOtherView() || state.lhbStock !== code || state.lhbDate !== date) return;
+    state.lhbDetail = detail;
+    state.lhbDetailKey = key;
+  } catch (e) {
+    if (!onOtherView()) return;
+    toast(messageFrom(e, "龙虎榜明细加载失败"), "error");
+  } finally {
+    state.lhbDetailLoading = false;
+    if (onOtherView()) updateOtherStage();
+  }
+}
+
+/** 读取单个营业部最近 30 天上榜记录（游资 / 席位两个页签共用）。 */
+async function loadLhbSeatLog(seatId: string, seatName: string): Promise<void> {
+  if (!seatId) return;
+  const token = ++lhbSeatToken;
+  state.lhbSeatLoading = true;
+  state.lhbSeatName = seatName;
+  state.lhbSeatLog = null;
+  updateOtherStage();
+  try {
+    const log = await api.getLhbSeatLog(seatId, 30);
+    if (!onOtherView() || token !== lhbSeatToken) return;
+    state.lhbSeatLog = log;
+  } catch (e) {
+    if (!onOtherView() || token !== lhbSeatToken) return;
+    toast(messageFrom(e, "营业部上榜记录加载失败"), "error");
+  } finally {
+    if (token === lhbSeatToken) {
+      state.lhbSeatLoading = false;
+      if (onOtherView()) updateOtherStage();
+    }
+  }
+}
+
+function selectLhbStock(code: string): void {
+  if (!code) return;
+  state.lhbStock = code;
+  state.lhbSeatLog = null;
+  updateOtherStage();
+  void loadLhbDetail(code);
+}
+
+/** 策略面板：把当前阶段的股票一次性加入自选（复用池子的分组选择弹层）。 */
+function addScreenStocksToWatch(stage: StrategyStage): void {
+  const screen = state.screen;
+  if (!screen || screen.date !== state.date) {
+    toast("策略结果未就绪，请先运行筛选", "error");
+    return;
+  }
+  const marketOf = (code: string): string =>
+    state.day?.stocks.find((item) => item.code === code)?.market ?? (code.startsWith("6") ? "1" : "0");
+  let picks: Array<{ code: string; name: string }> = [];
+  let label = "当前列表";
+  if (stage === "watch" || stage === "candidates") {
+    const topN = state.profile && state.profile.topN > 0 ? state.profile.topN : 0;
+    const list = stage === "watch" && topN > 0 ? screen.candidates.slice(0, topN) : screen.candidates;
+    picks = list.map((item) => ({ code: item.code, name: item.name }));
+    label = stage === "watch" ? "观察名单" : "候选池";
+  } else {
+    picks = (screen.stocks ?? [])
+      .filter((item) => (stage === "firstBoard" ? item.firstBoard : item.hardPassed))
+      .map((item) => ({ code: item.code, name: item.name }));
+    label = stage === "firstBoard" ? "首板" : "硬过滤";
+  }
+  if (!picks.length) {
+    toast("当前列表没有可以加入的股票");
+    return;
+  }
+  void openWatchAddDialog(
+    picks.map((item) => ({ code: item.code, name: item.name, market: marketOf(item.code) })),
+    `把${label}加入自选`,
+  );
+}
+
+function selectLhbTab(tab: OtherTab): void {
+  if (state.otherTab === tab) return;
+  state.otherTab = tab;
+  state.lhbSeatLog = null;
+  state.lhbSeatName = "";
+  if (!state.lhbBoard) {
+    syncLhbSelection();
+    updateOtherStage();
+    void ensureOther();
+    return;
+  }
+  if ((tab === "yyz" || tab === "agency") && !state.lhbAgencies) void loadLhbSecondary();
+  if (tab === "org" && !state.lhbInstitutions) void loadLhbSecondary();
+  syncLhbSelection();
+  updateOtherStage();
+  if (needsStockPanel()) {
+    if (state.lhbStock) void loadLhbDetail(state.lhbStock);
+    return;
+  }
+  if (tab === "agency" && state.lhbAgencyId) {
+    const agency = state.lhbAgencies?.rows.find((row) => row.id === state.lhbAgencyId);
+    if (agency) void loadLhbSeatLog(agency.id, agency.name);
+  }
 }
 
 function listenHistoryProgress(): void {
@@ -757,6 +1008,71 @@ function marketSessionOpen(): boolean {
 }
 
 /**
+ * 是否值得为「当前日期」再补一次网络刷新：
+ * 交易时段内照常刷新；收盘后只补拉一次，把盘中最后一份快照换成收盘定稿，
+ * 之后（周末 / 节假日 / 当晚再次打开）都只读本地缓存。
+ */
+function shouldRefreshLive(): boolean {
+  const today = state.calendar?.today;
+  if (!today || state.date !== today) return false;
+  if (marketSessionOpen()) return true;
+  // 收盘后 15:05 再补一次：收盘瞬间的接口有时还没结算完，早于该时刻的快照视为未定稿。
+  const settled = 15 * 60 + 5;
+  const now = beijingClock(Date.now() / 1000);
+  if (now.date !== today || now.minutes < settled) return false;
+  const fetchedAt = state.day?.fetchedAt ?? 0;
+  if (!fetchedAt) return true;
+  const fetched = beijingClock(fetchedAt);
+  return fetched.date !== today || fetched.minutes < settled;
+}
+
+/** 北京时间日期与当天分钟数（交易所时钟，和机器时区无关）。 */
+function beijingClock(tsSeconds: number): { date: string; minutes: number } {
+  const d = new Date((tsSeconds + 8 * 3600) * 1000);
+  const date = `${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, "0")}${String(d.getUTCDate()).padStart(2, "0")}`;
+  return { date, minutes: d.getUTCHours() * 60 + d.getUTCMinutes() };
+}
+
+/** 最近一个「已经收盘定稿」的交易日（YYYYMMDD）；盘前/盘中使用上一个交易日。 */
+function lastSettledTradeDate(): string {
+  const cal = state.calendar;
+  if (!cal) return "";
+  const now = beijingClock(Date.now() / 1000);
+  if (cal.isTradeDay !== false && now.date === cal.today && now.minutes >= 15 * 60 + 5) return cal.today;
+  const dates = cal.dates.filter((d) => d < cal.today);
+  return dates.length ? dates[dates.length - 1] : "";
+}
+
+/** 把各种 `2026-11-24` / `2026-11-24 16:14` / 数字串统一成 YYYYMMDD。 */
+function normalizeYmd(raw: string | undefined | null): string {
+  const digits = String(raw ?? "").replace(/\D/g, "");
+  return digits.slice(0, 8);
+}
+
+/**
+ * 缓存 K 线是否落后于「最近收盘日」：落后就补拉一次，避免收盘后一直停在盘中缓存
+ * （日/周/月/年线按最后一根日期比较；1 分钟线按日期比较，盘中由节流刷新负责）。
+ */
+function klineCacheBehind(period: Period, latestRaw: string): boolean {
+  const settled = lastSettledTradeDate();
+  const latest = normalizeYmd(latestRaw);
+  if (!settled || !latest) return false;
+  if (period === "month") return latest.slice(0, 6) < settled.slice(0, 6);
+  if (period === "year") return latest.slice(0, 4) < settled.slice(0, 4);
+  return latest < settled;
+}
+
+/** 指数条是否还停在上一次会话的收盘值（休市启动时用来补一次当天收盘）。 */
+function indicesBehindSettled(): boolean {
+  const settled = lastSettledTradeDate();
+  if (!settled || !state.indices.length) return false;
+  return state.indices.some((q) => {
+    const asOf = normalizeYmd(q.asOf);
+    return !asOf || asOf < settled;
+  });
+}
+
+/**
  * During the session the ladder pool is re-pulled quietly every minute: the
  * `time_preview` series grows and the aggregate stats change as new stocks seal.
  * The timeshare plot is refreshed on its own 1-minute feed every 30 seconds so
@@ -768,7 +1084,8 @@ function autoRefreshTick(): void {
   if (
     isToday &&
     state.view !== "chart" &&
-    marketSessionOpen() &&
+    // 交易时段内每分钟静默刷新；收盘后再补拉一次收盘定稿，之后保持本地缓存。
+    shouldRefreshLive() &&
     !state.refreshing &&
     now - lastDayAutoRefresh > 60000
   ) {
@@ -843,7 +1160,9 @@ async function loadChart(): Promise<void> {
     state.chartLoading = false;
     if (state.chartStock && !state.chartStock.name && data.name) state.chartStock.name = data.name;
     renderMain({ animate: false });
-    if (data.source === "cache") void refreshChart(token);
+    if (data.source === "cache" && (shouldRefreshLive() || klineCacheBehind(period, data.latestDate))) {
+      void refreshChart(token);
+    }
   } catch (e) {
     if (token !== chartToken) return;
     state.chartLoading = false;
@@ -882,6 +1201,8 @@ function renderMain(opts: { animate?: boolean } = {}): void {
     ladder: document.querySelector<HTMLElement>(".ladder-main")?.scrollTop ?? 0,
     pool: document.querySelector<HTMLElement>(".pool-body")?.scrollTop ?? 0,
     side: document.querySelector<HTMLElement>(".chart-side")?.scrollTop ?? 0,
+    otherList: document.querySelector<HTMLElement>(".oh-list-body")?.scrollTop ?? 0,
+    otherPanel: document.querySelector<HTMLElement>(".oh-panel-body")?.scrollTop ?? 0,
   };
   chart?.destroy();
   chart = null;
@@ -892,6 +1213,7 @@ function renderMain(opts: { animate?: boolean } = {}): void {
   else if (state.view === "timeline") html = renderTimeline();
   else if (state.view === "chart") html = renderChartView();
   else if (state.view === "strategy") html = renderStrategy();
+  else if (state.view === "other") html = renderOther();
   else html = renderLadder();
   main.innerHTML = html;
   if (opts.animate === false) main.querySelector(".view")?.classList.add("no-anim");
@@ -903,6 +1225,10 @@ function renderMain(opts: { animate?: boolean } = {}): void {
   if (poolScroller) poolScroller.scrollTop = scrolls.pool;
   const chartSide = main.querySelector<HTMLElement>(".chart-side");
   if (chartSide) chartSide.scrollTop = scrolls.side;
+  const otherList = main.querySelector<HTMLElement>(".oh-list-body");
+  if (otherList) otherList.scrollTop = scrolls.otherList;
+  const otherPanel = main.querySelector<HTMLElement>(".oh-panel-body");
+  if (otherPanel) otherPanel.scrollTop = scrolls.otherPanel;
   updateChrome();
 }
 
@@ -1198,6 +1524,59 @@ function handleClick(e: MouseEvent): void {
     void exportStrategy();
     return;
   }
+  const otherTab = target.closest<HTMLElement>("[data-other-tab]");
+  if (otherTab) {
+    const tab = otherTab.dataset.otherTab as OtherTab | undefined;
+    if (tab) selectLhbTab(tab);
+    return;
+  }
+  if (target.closest("[data-lhb-refresh]")) {
+    void ensureOther(true);
+    return;
+  }
+  const lhbSort = target.closest<HTMLElement>("[data-lhb-sort]");
+  if (lhbSort) {
+    const key = lhbSort.dataset.lhbSort as "net" | "pct" | "seats" | undefined;
+    if (key) {
+      state.lhbSort = state.lhbSort.key === key ? { key, dir: state.lhbSort.dir === -1 ? 1 : -1 } : { key, dir: -1 };
+      updateOtherStage();
+    }
+    return;
+  }
+  const lhbChart = target.closest<HTMLElement>("[data-lhb-chart]");
+  if (lhbChart) {
+    openChart(lhbChart.dataset.lhbChart || "", lhbChart.dataset.lhbChartName || "");
+    return;
+  }
+  const lhbStock = target.closest<HTMLElement>("[data-lhb-stock]");
+  if (lhbStock) {
+    selectLhbStock(lhbStock.dataset.lhbStock || "");
+    return;
+  }
+  const lhbTag = target.closest<HTMLElement>("[data-lhb-tag]");
+  if (lhbTag) {
+    state.lhbTag = lhbTag.dataset.lhbTag || "";
+    state.lhbSeatLog = null;
+    updateOtherStage();
+    return;
+  }
+  const lhbSeat = target.closest<HTMLElement>("[data-lhb-seat]");
+  if (lhbSeat) {
+    void loadLhbSeatLog(lhbSeat.dataset.lhbSeat || "", lhbSeat.dataset.lhbSeatName || "");
+    return;
+  }
+  const lhbAgency = target.closest<HTMLElement>("[data-lhb-agency]");
+  if (lhbAgency) {
+    state.lhbAgencyId = lhbAgency.dataset.lhbAgency || "";
+    void loadLhbSeatLog(state.lhbAgencyId, lhbAgency.dataset.lhbAgencyName || "");
+    return;
+  }
+  const screenWatch = target.closest<HTMLElement>("[data-screen-watch]");
+  if (screenWatch) {
+    const stage = screenWatch.dataset.screenWatch as StrategyStage | undefined;
+    if (stage) addScreenStocksToWatch(stage);
+    return;
+  }
   const watchCandidate = target.closest<HTMLElement>("[data-candidate-watch]");
   if (watchCandidate) {
     const code = watchCandidate.dataset.candidateWatch || "";
@@ -1396,7 +1775,7 @@ function handleClick(e: MouseEvent): void {
     case "batch-watch":
       openWatchAddDialog(
         filterStocks().map((s) => ({ code: s.code, name: s.name, market: s.market })),
-        `把当前列表（${filterStocks().length} 只）加入自选`,
+        `把当前列表加入自选`,
       );
       break;
     case "watch-add-current":
@@ -2443,7 +2822,7 @@ function openSettings(): void {
         <div class="setting-section">
           <div class="setting-label">关于</div>
           <div class="about-text">
-            天梯 · A股涨停复盘　<b>v1.4.1</b><br />
+            天梯 · A股涨停复盘　<b>v1.5.0</b><br />
             涨停与板块数据来自同花顺公开接口，K线来自东方财富公开接口。<br />
             所有数据仅用于学习复盘，不构成投资建议。快捷键：<b>Ctrl K</b> 搜索，<b>← →</b> 切换交易日，<b>Esc</b> 关闭浮层。
           </div>
